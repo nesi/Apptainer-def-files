@@ -1,0 +1,102 @@
+BootStrap: docker
+From: intel/oneapi-hpckit:devel-ubuntu22.04
+
+%labels
+    Author alexander.pletzer@nesi.org.nz
+    Version 0.0.1
+
+%help
+    Build a portable environment for the Unified Model with Chombo and unicicles
+
+%files
+# copy files from host to the container prior to calling %post
+# SOURCE DESTINATION. SOURCE is always on the host. DESTINATION is by default in container
+# ADAPT!!!!!
+/home/pletzera/Chombo-3.2 /usr/local/build
+/home/pletzera/bisicles_gnu /usr/local/build/bisicles_gnu
+
+#%startscript
+    # start the atd d
+    # service atd start
+
+%environment
+    export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+
+%post
+
+    apt-get update && apt-get upgrade -y
+  
+    # mosrs needs the killall command, available via pcmisc
+    apt-get install -y wget file vim psmisc csh cmake cmake-curses-gui automake apt-file
+
+    echo "> Setting timezone to UTC non-interactively..."
+    ln -fs /usr/share/zoneinfo/UTC /etc/localtime
+    apt-get install -y tzdata
+    dpkg-reconfigure --frontend noninteractive tzdata
+
+    # Pretend we build a vagrant VM
+    git clone https://github.com/pletzer/metomi-vms.git /vagrant
+
+    cd /vagrant
+    echo "> Replace vm -> apptainer in rose.conf files..."
+    for f in ./opt/metomi-site/etc/rose/rose.conf ./opt/metomi-site/etc/rose.conf.redhat ./opt/metomi-site/etc/rose.conf; do
+        sed -i 's/automatic\-options=SITE=vm/automatic\-options=SITE=apptainer/g' $f
+    done
+
+    cd /vagrant
+    echo "> Build UM base..."
+    bash -x install.sh ubuntu 2204 mosrs
+
+    cd /vagrant
+    echo "> Install UM dependencies (netcdf, grib/eccode, ...)"
+    version="10.7"
+    bash -x usr/local/bin/install-um-extras-intel -v ${version}
+
+    # some packages want gmake
+    if ! [ -f /usr/bin/gmake ]; then
+        ln -s /usr/bin/make /usr/bin/gmake
+    fi
+
+
+
+    cd /vagrant
+    echo "> Install OASIS-MCT..."
+    OASIS_MCT_VERSION="5.1"
+    #git clone --branch OASIS3-MCT_$OASIS_MCT_VERSION https://gitlab.com/cerfacs/oasis3-mct.git
+    #git clone https://gitlab.com/cerfacs/oasis3-mct.git
+    git clone -b UKMO_GC3_r1660 https://gitlab.com/cerfacs/oasis3-mct.git
+    cd oasis3-mct
+    export OASISMCT_DIR=$(pwd)
+    git fetch --all
+    git checkout OASIS3-MCT_$OASIS_MCT_VERSION
+    cd util/make_dir
+    rm -f make.inc make.intel_intelmpi
+    wget https://raw.githubusercontent.com/pletzer/nzesm_apptainer/main/packages/oasis3-mct/make.inc
+    wget https://raw.githubusercontent.com/pletzer/nzesm_apptainer/main/packages/oasis3-mct/make.intel_intelmpi
+    make -f TopMakefileOasis3 static-libs-fortran
+    cp -r ../../INSTALL_OASIS /usr/local/
+    #cp ../../INSTALL_OASIS/lib/*.a /usr/local/lib
+    #cp ../../INSTALL_OASIS/include/*.{h,mod} /usr/local/include
+
+    cd /vagrant
+    echo "> Install XIOS..."
+    #XIOS_VERSION="2024-05-21"
+    #svn co -r{${XIOS_VERSION}} http://forge.ipsl.jussieu.fr/ioserver/svn/XIOS/trunk XIOS
+    svn co http://forge.ipsl.jussieu.fr/ioserver/svn/XIOS/trunk@952 XIOS
+    cd XIOS/arch
+    branch="main"
+    wget https://raw.githubusercontent.com/pletzer/nzesm_apptainer/${branch}/packages/xios/arch-ifort_apptainer.env
+    wget https://raw.githubusercontent.com/pletzer/nzesm_apptainer/${branch}/packages/xios/arch-ifort_apptainer.fcm
+    wget https://raw.githubusercontent.com/pletzer/nzesm_apptainer/${branch}/packages/xios/arch-ifort_apptainer.path
+    cd ..
+    ./make_xios --full --prod --arch ifort_apptainer --netcdf_lib netcdf4_seq --use_oasis oasis3_mct
+    mkdir -p /usr/local/XIOS/lib
+    cp lib/* /usr/local/XIOS/lib
+    mkdir -p /usr/local/XIOS/include
+    cp inc/* /usr/local/XIOS/include
+    mkdir -p /usr/local/XIOS/bin
+    cp bin/* /usr/local/XIOS/bin
+
+
+
+

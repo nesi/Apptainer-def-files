@@ -1,0 +1,94 @@
+BootStrap: docker
+From: intel/oneapi-hpckit:devel-ubuntu20.04
+
+%labels
+    Author alexander.pletzer@nesi.org.nz
+    Version 0.0.1
+
+%help
+    Build a portable environment for the Unified Model
+
+#%startscript
+    # start the atd d
+    # service atd start
+
+%environment
+    export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+
+%post
+
+    apt-get update && apt-get upgrade -y
+  
+    # mosrs needs the killall command, available via pcmisc
+    apt-get install -y wget file vim psmisc
+
+    echo "> Setting timezone to UTC non-interactively..."
+    ln -fs /usr/share/zoneinfo/UTC /etc/localtime
+    apt-get install -y tzdata
+    dpkg-reconfigure --frontend noninteractive tzdata
+
+    # Pretend we build a vagrant VM
+    git clone https://github.com/pletzer/metomi-vms.git /vagrant
+
+    cd /vagrant
+    echo "> Replace vm -> apptainer in rose.conf files..."
+    for f in ./opt/metomi-site/etc/rose/rose.conf ./opt/metomi-site/etc/rose.conf.redhat ./opt/metomi-site/etc/rose.conf; do
+        sed -i 's/automatic\-options=SITE=vm/automatic\-options=SITE=apptainer/g' $f
+    done
+
+    cd /vagrant
+    echo "> Build base..."
+    bash -x install.sh ubuntu 2004 mosrs
+
+    cd /vagrant
+    echo "> Install UM dependencies (netcdf, grib/eccode, ...)"
+    version="10.7"
+    bash -x usr/local/bin/install-um-extras-intel -v ${version}
+
+    # some packages want gmake
+    ln -s /usr/bin/make /usr/bin/gmake
+
+    cd /vagrant
+    echo "> Install OASIS-MCT..."
+    git clone -b UKMO_GC3_r1660 https://gitlab.com/cerfacs/oasis3-mct.git
+    cd oasis3-mct
+
+    # patch lib/psmile/src/GPTLget_memusage.c (https://cerfacs.fr/site-oasis/forum/oa_main.php?c=177)
+    cp lib/psmile/src/GPTLget_memusage.c lib/psmile/src/GPTLget_memusage.c.ori
+    # the max pid number is wrong, on Linux get it
+    pid_max=$(cat /proc/sys/kernel/pid_max)
+    sed -i "s/\b999999\b/$pid_max/;" lib/psmile/src/GPTLget_memusage.c
+    echo "...patched lib/psmile/src/GPTLget_memusage.c"
+    #diff lib/psmile/src/GPTLget_memusage.c lib/psmile/src/GPTLget_memusage.c.ori
+
+    export OASISMCT_DIR=$(pwd)
+    cd util/make_dir
+    rm -f make.inc make.intel_intelmpi
+    wget https://raw.githubusercontent.com/pletzer/nzesm_apptainer/main/packages/oasis3-mct/make.inc
+    wget https://raw.githubusercontent.com/pletzer/nzesm_apptainer/main/packages/oasis3-mct/make.intel_intelmpi
+    make -f TopMakefileOasis3
+    cp -r ../../INSTALL_OASIS /usr/local/
+    # copy the mod files
+    mkdir -p /usr/local/INSTALL_OASIS/include
+    cp /usr/local/INSTALL_OASIS/build/lib/*/*.mod /usr/local/INSTALL_OASIS/include
+
+    cd /vagrant
+    echo "> Install XIOS..."
+    svn --non-interactive --trust-server-cert-failures="other,unknown-ca,cn-mismatch,expired" co http://forge.ipsl.jussieu.fr/ioserver/svn/XIOS/trunk@952 XIOS
+    cd XIOS/arch
+    branch="main"
+    wget https://raw.githubusercontent.com/pletzer/nzesm_apptainer/${branch}/packages/xios/arch-ifort_apptainer.env
+    wget https://raw.githubusercontent.com/pletzer/nzesm_apptainer/${branch}/packages/xios/arch-ifort_apptainer.fcm
+    wget https://raw.githubusercontent.com/pletzer/nzesm_apptainer/${branch}/packages/xios/arch-ifort_apptainer.path
+    cd ..
+    ./make_xios --full --prod --arch ifort_apptainer --netcdf_lib netcdf4_seq --use_oasis oasis3_mct
+    mkdir -p /usr/local/XIOS/lib
+    cp lib/* /usr/local/XIOS/lib
+    mkdir -p /usr/local/XIOS/include
+    cp inc/* /usr/local/XIOS/include
+    mkdir -p /usr/local/XIOS/bin
+    cp bin/* /usr/local/XIOS/bin
+
+
+
+

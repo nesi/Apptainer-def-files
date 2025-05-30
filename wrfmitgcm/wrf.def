@@ -1,0 +1,49 @@
+Bootstrap: oras
+From: ghcr.io/pletzer/coupled_model_apptainer_esmfenv86:latest
+
+%post
+    WRF_VERSION="4.1.1"
+    WPS_VERSION="4.2"
+
+    export WRF_DEPS_DIR=/software
+
+    # compilers
+    export CC=icc
+    export CXX=icc
+    export FC=ifort
+    export F77=ifort
+    export MPICC=mpiicc
+    export MPICXX=mpiicc
+    export MPIF77=mpiifort
+    export MPIF90=mpiifort
+
+    export NETCDF=$WRF_DEPS_DIR
+    export HDF5=$WRF_DEPS_DIR
+    export PNETCDF=$WRF_DEPS_DIR
+
+    export LD_LIBRARY_PATH="$WRF_DEPS_DIR/lib:$LD_LIBRARY_PATH"
+
+    # wrf
+    cd $WRF_DEPS_DIR
+    wget https://github.com/wrf-model/WRF/archive/v${WRF_VERSION}.tar.gz
+    md5sum v${WRF_VERSION}.tar.gz
+    tar xf v${WRF_VERSION}.tar.gz
+    cd WRF-${WRF_VERSION}
+    wget https://raw.githubusercontent.com/pletzer/coupled_model_apptainer/main/configure.wrf
+    echo "Compiling WRF..."
+    ./compile em_real
+
+    # wps
+    cd $WRF_DEPS_DIR
+    wget https://github.com/wrf-model/WPS/archive/v${WPS_VERSION}.tar.gz
+    tar xf v${WPS_VERSION}.tar.gz
+    cd WPS-${WPS_VERSION}
+    export WRF_DIR=$WRF_DEPS_DIR/WRF-${WRF_VERSION}
+    wget https://raw.githubusercontent.com/pletzer/coupled_model_apptainer/main/configure.wps
+    # no need to set MPI_LIB as we are compiling with mpiifort
+    export MPI_LIB=""
+    echo "Now in directory: $(pwd)"
+    echo "WRF_DIR: $WRF_DIR"
+    echo "Compiling WPS..."
+    ./compile
+    

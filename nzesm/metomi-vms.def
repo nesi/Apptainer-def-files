@@ -1,0 +1,41 @@
+BootStrap: docker
+From: ubuntu:22.04
+
+%setup
+    #create directory structure to receive the libraries, tools, etc
+    mkdir -p $APPTAINER_ROOTFS/opt
+    mkdir -p $APPTAINER_ROOTFS/vagrant
+    mkdir -p $APPTAINER_ROOTFS/home/vagrant
+    mkdir -p $APPTAINER_ROOTFS/home/root
+
+
+%post
+
+    # set some environment variables
+    export USER="root"
+
+    # update the package info on the system
+    apt -y update
+    # upgrade the packages on the system
+    apt -y upgrade
+    apt -y install git
+    apt -y install wget
+
+    #apt -y install curl
+    #apt -y install file
+    #apt -y install vim
+    apt -y install dos2unix
+
+    # prepare the installation
+    git clone https://github.com/metomi/metomi-vms.git
+    cd metomi-vms
+    cp -r * /vagrant
+    touch /home/vagrant/.bashrc
+    ls -ltr /vagrant
+    
+
+    bash install.sh ubuntu 2204 mosrs 
+    
+        
+
+

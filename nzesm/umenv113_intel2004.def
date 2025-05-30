@@ -1,0 +1,209 @@
+BootStrap: docker
+From: intel/oneapi-hpckit:devel-ubuntu20.04
+
+%labels
+    Author alexander.pletzer@nesi.org.nz
+    Version 0.0.1
+
+%help
+    Build a portable environment for the Unified Model
+
+%files
+    # copy files from host to the container prior to calling %post
+    # SOURCE DESTINATION. SOURCE is always on the host. DESTINATION is by default in container
+    # ADAPT!!!!!
+    /home/pletzera/Chombo-3.2 /usr/local/build/Chombo
+    /home/pletzera/bisicles_gnu /usr/local/build/bisicles_gnu
+
+
+#%startscript
+    # start the atd d
+    # service atd start
+
+%environment
+    export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+
+%post
+
+    apt-get update && apt-get upgrade -y
+
+    # chombo needs csh
+    apt-get install -y csh 
+    
+    apt-get install -y cmake cmake-curses-gui automake apt-file wget python3
+    ln -s /usr/bin/python3 /usr/bin/python
+  
+    # mosrs needs the killall command, available via pcmisc
+    apt-get install -y wget file vim psmisc
+    # netcdf operators
+    apt-get install -y nco
+
+    echo "> Setting timezone to UTC non-interactively..."
+    ln -fs /usr/share/zoneinfo/UTC /etc/localtime
+    apt-get install -y tzdata
+    dpkg-reconfigure --frontend noninteractive tzdata
+    
+    # Build UM related stuff using the Intel compilers
+
+    # Pretend we build a vagrant VM
+    git clone https://github.com/pletzer/metomi-vms.git /vagrant
+
+    cd /vagrant
+    echo "> Replace vm -> apptainer in rose.conf files..."
+    for f in ./opt/metomi-site/etc/rose/rose.conf ./opt/metomi-site/etc/rose.conf.redhat ./opt/metomi-site/etc/rose.conf; do
+        sed -i 's/automatic\-options=SITE=vm/automatic\-options=SITE=apptainer/g' $f
+    done
+
+    cd /vagrant
+    echo "> Build base..."
+    bash -x install.sh ubuntu 2004 mosrs
+
+    cd /vagrant
+    echo "> Install UM dependencies (netcdf, grib/eccode, ...)"
+    version="11.3"
+    bash -x usr/local/bin/install-um-extras-intel -v ${version}
+
+    # some packages want gmake
+    ln -s /usr/bin/make /usr/bin/gmake
+
+    cd /vagrant
+    echo "> Install OASIS-MCT..."
+    git clone -b UKMO_GC3_r1660 https://gitlab.com/cerfacs/oasis3-mct.git
+    cd oasis3-mct
+
+    # patch lib/psmile/src/GPTLget_memusage.c (https://cerfacs.fr/site-oasis/forum/oa_main.php?c=177)
+    cp lib/psmile/src/GPTLget_memusage.c lib/psmile/src/GPTLget_memusage.c.ori
+    # the max pid number is wrong, on Linux get it
+    pid_max=$(cat /proc/sys/kernel/pid_max)
+    sed -i "s/\b999999\b/$pid_max/;" lib/psmile/src/GPTLget_memusage.c
+    echo "...patched lib/psmile/src/GPTLget_memusage.c"
+    #diff lib/psmile/src/GPTLget_memusage.c lib/psmile/src/GPTLget_memusage.c.ori
+
+    export OASISMCT_DIR=$(pwd)
+    cd util/make_dir
+    rm -f make.inc make.intel_intelmpi
+    wget https://raw.githubusercontent.com/pletzer/nzesm_apptainer/main/packages/oasis3-mct/make.inc
+    wget https://raw.githubusercontent.com/pletzer/nzesm_apptainer/main/packages/oasis3-mct/make.intel_intelmpi
+    make -f TopMakefileOasis3
+    cp -r ../../INSTALL_OASIS /usr/local/
+    # copy the mod files
+    mkdir -p /usr/local/INSTALL_OASIS/include
+    cp /usr/local/INSTALL_OASIS/build/lib/*/*.mod /usr/local/INSTALL_OASIS/include
+
+    cd /vagrant
+    echo "> Install XIOS..."
+    svn --non-interactive --trust-server-cert-failures="other,unknown-ca,cn-mismatch,expired" co http://forge.ipsl.jussieu.fr/ioserver/svn/XIOS/trunk@952 XIOS
+    cd XIOS/arch
+    branch="main"
+    wget https://raw.githubusercontent.com/pletzer/nzesm_apptainer/${branch}/packages/xios/arch-ifort_apptainer.env
+    wget https://raw.githubusercontent.com/pletzer/nzesm_apptainer/${branch}/packages/xios/arch-ifort_apptainer.fcm
+    wget https://raw.githubusercontent.com/pletzer/nzesm_apptainer/${branch}/packages/xios/arch-ifort_apptainer.path
+    cd ..
+    ./make_xios --full --prod --arch ifort_apptainer --netcdf_lib netcdf4_seq --use_oasis oasis3_mct
+    mkdir -p /usr/local/XIOS/lib
+    cp lib/* /usr/local/XIOS/lib
+    mkdir -p /usr/local/XIOS/include
+    cp inc/* /usr/local/XIOS/include
+    mkdir -p /usr/local/XIOS/bin
+    cp bin/* /usr/local/XIOS/bin
+
+    # Build the unicicles dependencies
+    #export BIKEFILES=$HOME/unicicles_files/
+
+    export HDF5_LIBDIR=/usr/local/lib/
+    export HDF5_INCDIR=/usr/local/include/
+    # for the Intel compiler
+    export NETCDF_LIBDIR=/usr/local/lib/
+    export NETCDF_INCDIR=/usr/local/include/
+    export PYTHONLIBS=/opt/intel/oneapi/intelpython/latest/lib/python3.9/
+
+    export BUILD_DIR=/usr/local/build
+    export BISICLES_HOME=$BUILD_DIR
+    export GLIM_DIR=/usr/local
+
+    mkdir -p $BUILD_DIR
+
+    echo "Building FFTW..."
+    cd $BUILD_DIR
+    wget https://www.fftw.org/fftw-3.3.10.tar.gz
+    tar xf fftw-3.3.10.tar.gz
+    cd fftw-3.3.10
+    mkdir build
+    cd build
+    #MPICC=mpicc CC=gcc F77=gfortran ../configure --prefix=/usr/local/
+    MPICC=mpiicc CC=icc F77=ifort ../configure --prefix=/usr/local/
+    make -j 6
+    make install
+
+    echo "\n\nBuilding chombo..."
+    cd $BUILD_DIR
+    # svn co https://anag-repo.lbl.gov/svn/Chombo/release/3.2 Chombo #requires an anag repository account
+    # the git repo is missing CoDimCopier.H
+    #git clone https://github.com/applied-numerical-algorithms-group-lbnl/Chombo_3.2.git
+    cd Chombo/lib
+    wget https://raw.githubusercontent.com/pletzer/nzesm_apptainer/main/packages/chombo/intel/Make.defs.local
+    mv Make.defs.local mk/
+    make all
+
+    echo "\n\nBuilding bisicles..."
+    cd $BUILD_DIR
+    git clone https://github.com/ggslc/bisicles-uob.git
+    cd bisicles-uob/code/exec2D
+    # this assumes that bisicles-uob and Chombo are checked out in the same directory
+    make clean
+    make
+
+    echo "\n\nBuilding cdriver wrapper..."
+    cd $BUILD_DIR
+    cd bisicles-uob/code/cdriver
+    rm -rf GNUmakefile
+    wget https://raw.githubusercontent.com/pletzer/nzesm_apptainer/main/packages/bisicles-uob/code/cdriver/GNUmakefile
+    cat GNUmakefile
+    FC=$F90_VENDOR make -f GNUmakefile ftestwrapper
+
+    # # netcdf-fortran for gfortran
+    # version="4.6.1"
+    # cd $BUILD_DIR
+    # wget https://downloads.unidata.ucar.edu/netcdf-fortran/${version}/netcdf-fortran-${version}.tar.gz
+    # tar xf netcdf-fortran-${version}.tar.gz
+    # cd netcdf-fortran-${version}
+    # mkdir build
+    # cd build
+    # FC=gfortran CC=gcc \
+    #     cmake -DCMAKE_PREFIX_PATH=/usr/local -DENABLE_FORTRAN_TYPE_CHECKS=OFF \
+    #     -DCMAKE_INSTALL_PREFIX=/usr/local/gnu -DCMAKE_BUILD_TYPE=Release ..
+    # make
+    # make install
+
+
+    # echo "\n\nBuilding glimmer-cism..."
+    # cd $BUILD_DIR
+    # git clone https://github.com/ggslc/unicicles.git
+    # cd unicicles/glimmer-cism
+    # ./bootstrap
+    # cd ..
+    # mkdir parallel
+    # cd parallel
+    # FC=mpif90 CXX=g++ \
+    # # FCFLAGS="-fno-range-check -ffree-line-length-0 -DBISICLES_CDRIVER -DNO_RESCALE -fallow-argument-mismatch -fallow-invalid-boz -g -I$BISICLES_HOME/bisicles-uob/code/src " \
+    # # LDFLAGS=" -L$BISICLES_HOME/bisicles-uob/code/lib -lBisicles2d.Linux.64.mpicxx.gfortran.OPT.MPI -lChomboLibs2d.Linux.64.mpicxx.gfortran.OPT.MPI -lstdc++ -lcrypt -lpthread -ldl -lutil -lm " \
+    # # ../glimmer-cism/configure \
+    # # --with-netcdf-lib=$NETCDF_LIBDIR --with-netcdf-include=$NETCDF_INCDIR \
+    # # --with-hdf5-lib=$HDF5_LIBDIR --with-hdf5-include=$HDF5_INCDIR \
+    # # --enable-mpi --prefix=/usr/local/ --disable-python
+    # FCFLAGS="-DBISICLES_CDRIVER -DNO_RESCALE-g -I$BISICLES_HOME/bisicles-uob/code/src " \
+    # LDFLAGS=" -L$BISICLES_HOME/bisicles-uob/code/lib -lBisicles2d.Linux.64.mpicxx.gfortran.OPT.MPI -lChomboLibs2d.Linux.64.mpicxx.gfortran.OPT.MPI -lstdc++ -lcrypt -lpthread -ldl -lutil -lm " \
+    # ../glimmer-cism/configure \
+    # --with-netcdf-lib=/usr/local/gnu/lib --with-netcdf-include=/usr/local/gnu/include \
+    # --with-hdf5-lib=$HDF5_LIBDIR --with-hdf5-include=$HDF5_INCDIR \
+    # --enable-mpi --prefix=/usr/local/ --disable-python
+    # make
+    # make install
+
+    # echo "Building unicicles wrapper from github..."
+    # cd $BUILD_DIR/unicicles/wrappers/ukesm-ice_NETCDF
+    # wget https://raw.githubusercontent.com/pletzer/nzesm_apptainer/refs/heads/main/packages/unicicles/wrappers/ukesm-ice_NETCDF/Makefile.gnu
+    # make clean -f Makefile.gnu
+    # make -f Makefile.gnu
+
+

@@ -1,0 +1,283 @@
+BootStrap: docker
+From: intel/oneapi-hpckit:devel-ubuntu22.04
+
+%environment
+    export DEPS_DIR=/software
+    export PATH="$DEPS_DIR/bin:$PATH"
+    export NETCDF=$DEPS_DIR
+    export HDF5=$DEPS_DIR
+    export PNETCDF=$DEPS_DIR
+    export CC=icc
+    export CXX=icc
+    export FC=ifort
+    export F77=ifort
+    export MPICC=mpiicc
+    export MPICXX=mpiicc
+    export MPIF77=mpiifort
+    export MPIF90=mpiifort
+
+    # wrf requires those
+    export NETCDF=$DEPS_DIR
+    export HDF5=$DEPS_DIR
+    export PNETCDF=$DEPS_DIR
+
+    # coupler
+    export NETCDF_DIR=$DEPS_DIR
+    export NETCDF_INC=$NETCDF_DIR/include/
+    export NETCDF_LIB=$NETCDF_DIR/lib/
+
+    export MPI_DIR=/opt/intel/oneapi/mpi/2021.8.0/
+    export MPI_INC=$MPI_DIR/include
+
+    # silent installation of perl modules, uses defaults
+    export PERL_MM_USE_DEFAULT=1
+
+%post
+    apt -y update
+    apt -y install wget
+    apt -y install zlib1g zlib1g-dev
+    apt -y install libsz2 libbz2-dev
+    apt -y install libxml2-dev
+    apt -y install libpng-dev
+    apt -y install m4 curl libcurl4-openssl-dev
+    apt -y install tcsh
+    apt -y install file
+    apt -y install vim
+    apt -y install subversion
+
+    # apr is causing some issues with perl -MCPAN -e 'install SVN::Client'
+    #apt -y install libapr1-dev libaprutil1-dev
+
+    apt -y install perl-modules-5.34
+    apt -y install perl-tk
+    apt -y install xxdiff
+    apt -y install rsync
+    apt -y install diffutils
+    apt -y install libsvn-perl
+    # perl modules, required by FCM
+    # https://metomi.github.io/fcm/doc/installation/
+    perl -MCPAN -e 'install Config::IniFiles'
+    perl -MCPAN -e 'install DBD::SQLite'
+    perl -MCPAN -e 'install XML::Parser'
+    # no need to install, part of libsvn-perl
+    #perl -MCPAN -e 'install SVN::Client'  
+
+    # versions
+    FCM_VERSION="2021.05.0"
+    HDF5_VERSION="1.12.2"
+    NETCDF_C_VERSION="4.9.2"
+    NETCDF_FORTRAN_VERSION="4.6.1"
+    NETCDF_CXX_VERSION="4.3.1"
+    PNETCDF_VERSION="1.12.3"
+    LIBPNG_VERSION="1.2.59"
+    JASPER_VERSION="1.900.1"
+    ECCODES_VERSION="2.35.0"
+    SHUMLIB_VERSION="13.0"
+    GRIB_API_VERSION="1.21.0"
+    LIBAEC_VERSION="1.1.3"
+
+    export DEPS_DIR=/software
+
+    # compilers
+    export CC=icc
+    export CXX=icc
+    export FC=ifort
+    export F77=ifort
+    export MPICC=mpiicc
+    export MPICXX=mpiicc
+    export MPIF77=mpiifort
+    export MPIF90=mpiifort
+
+    export NETCDF=$DEPS_DIR
+    export HDF5=$DEPS_DIR
+    export PNETCDF=$DEPS_DIR
+
+    export LD_LIBRARY_PATH="$DEPS_DIR/lib:$LD_LIBRARY_PATH"
+
+    mkdir -p $DEPS_DIR
+
+    # FCM
+    cd $DEPS_DIR
+    wget https://github.com/metomi/fcm/archive/refs/tags/${FCM_VERSION}.tar.gz
+    tar xf ${FCM_VERSION}.tar.gz
+    mkdir -p ${DEPS_DIR}/bin
+    ln -s ${DEPS_DIR}/fcm-${FCM_VERSION}/bin/fcm ${DEPS_DIR}/bin/fcm
+
+
+    # libpng
+    cd $DEPS_DIR
+    wget https://sourceforge.net/projects/libpng/files/libpng12/1.2.59/libpng-${LIBPNG_VERSION}.tar.xz/download
+    tar xf download
+    rm -rf download
+    cd libpng-${LIBPNG_VERSION}
+    ./configure --prefix=$DEPS_DIR
+    make -j 4
+    make install
+    cd ..
+    rm -rf libpng-${LIBPNG_VERSION}
+
+    # jasper
+    cd $DEPS_DIR
+    wget https://www2.mmm.ucar.edu/wrf/OnLineTutorial/compile_tutorial/tar_files/jasper-${JASPER_VERSION}.tar.gz
+    tar xf jasper-${JASPER_VERSION}.tar.gz
+    rm jasper-${JASPER_VERSION}.tar.gz
+    cd jasper-${JASPER_VERSION}
+    ./configure --prefix=$DEPS_DIR
+    make -j 4
+    make install
+    cd ..
+    rm -rf jasper-${JASPER_VERSION}
+
+    # hdf5
+    cd $DEPS_DIR
+    HDF5_VERSION_SHORT=$(echo $HDF5_VERSION | awk -F '.' '{print $1"."$2}')
+    wget https://support.hdfgroup.org/ftp/HDF5/releases/hdf5-${HDF5_VERSION_SHORT}/hdf5-${HDF5_VERSION}/src/hdf5-${HDF5_VERSION}.tar.gz
+    tar xf hdf5-${HDF5_VERSION}.tar.gz
+    rm hdf5-${HDF5_VERSION}.tar.gz
+    cd hdf5-${HDF5_VERSION}
+    mkdir build
+    cd build
+    CC=$MPICC FC=$MPIF90 ../configure --prefix=$DEPS_DIR --enable-parallel --enable-fortran
+    make -j 4
+    make install
+    cd ../..
+    rm -rf hdf5-${HDF5_VERSION}
+    ls $DEPS_DIR/lib
+    ls $DEPS_DIR/include
+    ls $DEPS_DIR/bin
+
+    # netcdf-c
+    wget https://downloads.unidata.ucar.edu/netcdf-c/${NETCDF_C_VERSION}/netcdf-c-${NETCDF_C_VERSION}.tar.gz
+    tar xf netcdf-c-${NETCDF_C_VERSION}.tar.gz
+    rm netcdf-c-${NETCDF_C_VERSION}.tar.gz
+    cd netcdf-c-${NETCDF_C_VERSION}
+    mkdir build
+    cd build
+    CPPFLAGS="-I${DEPS_DIR}/include" \
+     LDFLAGS="-L${DEPS_DIR}/lib -lhdf5 -lhdf5_hl" \
+     CC=$MPICC ../configure --prefix=$DEPS_DIR 
+    make -j 4
+    make install
+    cd ../..
+    rm -rf netcdf-c-${NETCDF_C_VERSION}
+    ls $DEPS_DIR/lib
+    ls $DEPS_DIR/include
+    ls $DEPS_DIR/bin
+
+    # netcdf-fortran
+    wget https://downloads.unidata.ucar.edu/netcdf-fortran/${NETCDF_FORTRAN_VERSION}/netcdf-fortran-${NETCDF_FORTRAN_VERSION}.tar.gz
+    tar xf netcdf-fortran-${NETCDF_FORTRAN_VERSION}.tar.gz
+    rm netcdf-fortran-${NETCDF_FORTRAN_VERSION}.tar.gz
+    cd netcdf-fortran-${NETCDF_FORTRAN_VERSION}
+    mkdir build
+    cd build
+    CPPFLAGS="$(${DEPS_DIR}/bin/nc-config --cflags)" LDFLAGS="$(${DEPS_DIR}/bin/nc-config --libs)" \
+    ../configure --prefix=$DEPS_DIR
+    make
+    make install
+    cd ../..
+    rm -rf netcdf-fortran-${NETCDF_FORTRAN_VERSION}
+
+    # netcdf-c++
+    cd $DEPS_DIR
+    wget https://downloads.unidata.ucar.edu/netcdf-cxx/${NETCDF_CXX_VERSION}/netcdf-cxx4-${NETCDF_CXX_VERSION}.tar.gz
+    tar xf netcdf-cxx4-${NETCDF_CXX_VERSION}.tar.gz
+    rm netcdf-cxx4-${NETCDF_CXX_VERSION}.tar.gz
+    cd netcdf-cxx4-${NETCDF_CXX_VERSION}
+    mkdir build
+    cd build
+    CC=$CC CXX=$CXX CPPFLAGS="$(${DEPS_DIR}/bin/nc-config --cflags)" LDFLAGS="$(${DEPS_DIR}/bin/nc-config --libs)" \
+    ../configure --prefix=$DEPS_DIR
+    make
+    make install
+    cd ../..
+    rm -rf netcdf-cxx4-${NETCDF_CXX_VERSION}
+    ls $DEPS_DIR/lib
+    ls $DEPS_DIR/include
+    ls $DEPS_DIR/bin
+
+    # pnetcdf
+    wget https://parallel-netcdf.github.io/Release/pnetcdf-${PNETCDF_VERSION}.tar.gz
+    tar xf pnetcdf-${PNETCDF_VERSION}.tar.gz
+    rm pnetcdf-${PNETCDF_VERSION}.tar.gz
+    cd pnetcdf-${PNETCDF_VERSION}
+    mkdir build
+    cd build
+    ../configure --prefix=$DEPS_DIR --with-netcdf4=$DEPS_DIR
+    make
+    make install
+    cd ../..
+    rm -rf pnetcdf-${PNETCDF_VERSION}
+    ls $DEPS_DIR/lib
+    ls $DEPS_DIR/include
+    ls $DEPS_DIR/bin
+
+    # libaec, used by ecCodes
+    cd $DEPS_DIR
+    wget https://gitlab.dkrz.de/k202009/libaec/-/archive/v1.1.3/libaec-v${LIBAEC_VERSION}.tar.gz
+    tar xf libaec-v${LIBAEC_VERSION}.tar.gz
+    rm libaec-v${LIBAEC_VERSION}.tar.gz
+    cd libaec-v${LIBAEC_VERSION}/
+    mkdir build
+    cd build/
+    FC=$FC CC=$CC CXX=$CXX  cmake -D CMAKE_INSTALL_PREFIX=$DEPS_DIR ..
+    make
+    make install
+    cd ../..
+    rm -rf libaec-v${LIBAEC_VERSION}
+
+    # ecCodes
+    cd $DEPS_DIR
+    wget https://confluence.ecmwf.int/download/attachments/45757960/eccodes-${ECCODES_VERSION}-Source.tar.gz
+    tar xvf eccodes-${ECCODES_VERSION}-Source.tar.gz
+    rm eccodes-${ECCODES_VERSION}-Source.tar.gz
+    cd eccodes-${ECCODES_VERSION}-Source
+    mkdir build
+    cd build
+    FC=$FC CC=$CC CXX=$CXX cmake -D CMAKE_INSTALL_PREFIX=$DEPS_DIR ..
+    make 
+    make install
+    cd ../..
+    rm -rf eccodes-${ECCODES_VERSION}-Source
+
+    # shumlib
+    cd $DEPS_DIR
+    wget https://github.com/metomi/shumlib/archive/refs/tags/um${SHUMLIB_VERSION}.tar.gz
+    tar xf um${SHUMLIB_VERSION}.tar.gz
+    rm um${SHUMLIB_VERSION}.tar.gz
+    cd shumlib-um${SHUMLIB_VERSION}
+    export SHUM_OPENMP=true
+    export LIBDIR_OUT=$DEPS_DIR
+    cat make/vm-x86-gfortran-gcc.mk | \
+        perl -ne "s/gfortran/$FC/g;s/gcc/$CC/g;s/\-fopenmp/-qopenmp/g;s/\-std=f2008ts/-std08/g;s/\-pedantic-errors//;s/\-pedantic//;s/\-fno-range-check//;print;" \
+         > make/vm-x86-ifort-icc.mk
+
+    for lib in 'shum_byteswap' 'shum_data_conv' 'shum_fieldsfile_class' \
+               'shum_latlon_eq_grids' 'shum_string_conv' 'shum_wgdos_packing' \
+               'shum_constants' 'shum_fieldsfile' 'shum_horizontal_field_interp' \
+               'shum_spiral_search' 'shum_thread_utils'; do
+            echo $lib
+            make -f make/vm-x86-ifort-icc.mk $lib
+    done
+    cd ..
+    rm -rf shumlib-um${SHUMLIB_VERSION}
+
+    # OASIS-MTC
+
+    # # Grib-api
+    # cd $DEPS_DIR
+    # wget https://github.com/weathersource/grib_api/archive/refs/tags/v${GRIB_API_VERSION}.tar.gz
+    # tar xf  v${GRIB_API_VERSION}.tar.gz
+    # rm v${GRIB_API_VERSION}.tar.gz
+    # cd grib_api-${GRIB_API_VERSION}
+    # mkdir build
+    # cd build
+    # FC=$FC CC=$CC CXX=$CXX cmake -D CMAKE_INSTALL_PREFIX=$DEPS_DIR ..
+    # make 
+    # make install
+    # cd ../..
+    # rm -rf grib_api-${GRIB_API_VERSION}
+
+
+
+

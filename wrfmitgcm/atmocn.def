@@ -1,0 +1,59 @@
+Bootstrap: oras
+From: ghcr.io/pletzer/coupled_model_apptainer_esmfenv84:latest
+
+%post
+
+    # get the code
+    cd $WRF_DEPS_DIR
+    cp -R /nesi/nobackup/pletzera/coupled_model_apptainer/pskrips .
+    cd pskrips
+
+    export WRF_DIR=$(pwd)/models/PWRF/PWRF-4.1.3_PSKRIPSv1.0/
+    export PWRF_DIR=$WRF_DIR
+    export MITGCM_DIR=$(pwd)/models/MITgcm-checkpoint67m
+    export PSKRIPS_DIR=$(pwd)/models/PSKRIPS/PSKRIPSv1/
+    export SKRIPS_DIR=$(pwd)/models/PSKRIPS/scripps_kaust_model-2.0a/scripps_kaust_model-master
+
+    export MITGCM_OPT=linux_amd64_ifort_coupled
+
+    # for esmf
+    export ESMF_OS=Linux
+
+    export SKRIPS_NETCDF_INCLUDE=-I$NETCDF_INC
+    export SKRIPS_NETCDF_LIB=-L$NETCDF_LIB
+    export SKRIPS_MPI_DIR=$MPI_DIR
+    export ESMF_LIB=$ESMF_LIB_DIR
+    export ESMFMKFILE=$ESMF_LIB/esmf.mk
+
+    export LD_LIBRARY_PATH=$ESMF_LIB/${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+
+    # compile PWRF
+    cd models/PWRF/PWRF-4.1.3_PSKRIPSv1.0
+    # no need to copy configure.wrf, there is no diff
+    ./clean -a
+    ./clean -a
+    # clean removes the configure.wrf file
+    cp ../configure_apptainer.wrf configure.wrf
+    ./compile em_real
+
+    cd ../../PSKRIPS/PSKRIPSv1/
+
+    echo "The option file is: $MITGCM_OPT"
+
+    # build MITGCM as a library
+    cp utils/* build/ # copy the scripts to install MITGCM
+    cp mitCode/* code/ # copy the scripts to install MITGCM
+    cp mitCode_PSKRIPS/* code/ # copy the scripts to install MITGCM
+    cd build
+    ./makescript_fwd.sio.shaheen ${MITGCM_DIR} # install MITGCM, generate *.f files
+
+    # should have mitgcmuv created in this directory
+
+    cp ${MPI_DIR}/include/mpif* . 
+    ./mkmod.sh ocn # install MITGCM as a library, generate *.mod files
+    cd ..
+
+    # build the coupler
+    cp coupledCode_PSKRIPS/* coupledCode/ 
+    cd coupledCode
+    ./Allmake.sh

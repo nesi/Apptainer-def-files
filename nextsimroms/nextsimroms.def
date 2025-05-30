@@ -1,0 +1,178 @@
+BootStrap: localimage
+From: /home/pletzera/nextsimroms_apptainer/nextsim.sif
+
+%arguments
+    NEXTSIM_SIF=/home/pletzera/nextsimroms_apptainer/nextsim.sif
+    ROMS_SRC_DIR=/home/pletzera/iceshelf_roms
+    
+
+
+%help
+    Build a portable version of the coupled neXtSIM-ROMS model
+
+%setup
+    # create directory to build chombo and other packages in the container
+    #mkdir -p ${APPTAINER_ROOTFS}/usr/local/build
+
+%files
+    # copy files from host to the container prior to calling %post
+    # SOURCE DESTINATION. SOURCE is always on the host. DESTINATION is by default in container
+    # ADAPT!!!!!
+    {{ ROMS_SRC_DIR }}
+    
+%environment
+    export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+    export ESMFMKFILE=/usr/local/build/esmf-8.7.0/lib/libg/Linux.gfortran.64.openmpi.default/esmf.mk
+
+%post
+
+    apt-get update && apt-get upgrade -y
+    apt-get install -y ca-certificates openssl vim subversion
+    apt-get install -y automake autoconf libtool cmake pkg-config ksh
+
+
+    export BUILD_DIR=/usr/local/build
+    export INSTALL_DIR=/usr/local/
+
+    export MPIF90=mpif90
+    export MPICC=mpicc
+    export MPICXX=mpic++
+
+    mkdir $BUILD_DIR
+
+    # netcdf-fortran
+    version="4.5.3"
+    cd $BUILD_DIR
+    wget --no-check-certificate https://downloads.unidata.ucar.edu/netcdf-fortran/${version}/netcdf-fortran-${version}.tar.gz
+    tar xf netcdf-fortran-${version}.tar.gz
+    cd netcdf-fortran-${version}
+    mkdir build
+    cd build
+    FC=$MPIF90 CC=$MPICC CXX=$MPICXX  CPPFLAGS="-I/opt/conda/include" LDFLAGS="-L/opt/conda/lib -lnetcdf" ../configure --enable-logging --prefix=$INSTALL_DIR
+    make
+    make install    
+
+    # # Build Arpack, may not be required. For data assimilation
+    # cd $BUILD_DIR
+    # git clone https://bitbucket.org/chaoyang2013/arpack.git
+    # cd arpack
+    # mv ARmake.inc ARmake.inc.ori
+    # mv Makefile Makefile.ori
+    # wget --no-check-certificate https://raw.githubusercontent.com/pletzer/nextsimroms_apptainer/refs/heads/main/packages/arpack/ARmake.inc
+    # wget --no-check-certificate https://raw.githubusercontent.com/pletzer/nextsimroms_apptainer/refs/heads/main/packages/arpack/Makefile
+    # make clean
+    # make lib
+    # make plib
+    # cp *.a $INSTALL_DIR/lib
+
+    # # Build CICE-ROMS. Dow er need to specify where arpack is installed? Need to turn on some compilation options
+    # cd {{ ROMS_SRC_DIR }}
+    # mv makefile makefile.ori
+    # wget --no-check-certificate https://raw.githubusercontent.com/pletzer/nextsimroms_apptainer/refs/heads/main/packages/iceshelf_roms/makefile
+    # cd Compilers
+    # mv Linux-gfortran.mk Linux-gfortran.mk.ori
+    # wget --no-check-certificate https://raw.githubusercontent.com/pletzer/nextsimroms_apptainer/refs/heads/main/packages/iceshelf_roms/Compilers/Linux-gfortran.mk
+    # cd ..
+    # make clean
+    # make
+    # cp ./oceanM $INSTALL_DIR/bin
+
+    #
+    # OASIS-MCT
+    #
+    
+    # yaxt
+    YAXT_VERSION="0.11.3"
+    cd $BUILD_DIR
+    wget https://swprojects.dkrz.de/redmine/attachments/download/541/yaxt-${YAXT_VERSION}.tar.gz
+    tar xf yaxt-${YAXT_VERSION}.tar.gz
+    cd yaxt-${YAXT_VERSION}
+    mkdir build
+    cd build
+    FC=$MPIF90 CC=$MPICC ../configure --prefix=$INSTALL_DIR --without-regard-for-quality
+    make -j 4
+    make install
+    cd ../..
+    rm -rf yaxt-${YAXT_VERSION}*
+    ls -l ${INSTALL_DIR}/lib
+    ls -l ${INSTALL_DIR}/include
+    ls -l ${INSTALL_DIR}/bin
+
+    # fyaml
+    FYAML_VERSION="0.9"
+    cd $BUILD_DIR
+    wget https://github.com/pantoniou/libfyaml/archive/refs/tags/v${FYAML_VERSION}.tar.gz
+    tar xf v${FYAML_VERSION}.tar.gz
+    cd libfyaml-${FYAML_VERSION}
+    ./bootstrap.sh
+    CC=$MPICC ./configure --prefix=$INSTALL_DIR
+    make
+    make install 
+    cd ..
+    rm -rf libfyaml-${FYAML_VERSION} v${FYAML_VERSION}.tar.gz
+    ls -l ${INSTALL_DIR}/lib
+    ls -l ${INSTALL_DIR}/include
+    ls -l ${INSTALL_DIR}/bin
+
+    # YAC
+    cd $BUILD_DIR
+    git clone https://gitlab.dkrz.de/dkrz-sw/yac.git
+    cd yac
+    git checkout tags/v3.5.2
+    mkdir build
+    cd build
+    FC=$MPIF90 CC=$MPICC MPI_LAUNCH=mpiexec ../configure --prefix=$INSTALL_DIR --disable-mpi-checks
+    make -j 4
+    make install
+    cd ../../
+    rm -rf yac
+    ls -l ${INSTALL_DIR}/lib
+    ls -l ${INSTALL_DIR}/include
+    ls -l ${INSTALL_DIR}/bin
+
+    # oasis3-mct
+    cd $BUILD_DIR
+    git clone https://gitlab.com/cerfacs/oasis3-mct.git
+    cd oasis3-mct
+    git fetch --all
+    git checkout OASIS3-MCT_5.2
+
+    # need to patch file lib/psmile/src/GPTLget_memusage.c, see https://cerfacs.fr/site-oasis/forum/oa_main.php?c=177
+    f="lib/psmile/src/GPTLget_memusage.c"
+    cp $f ${f}_ori
+    max_num_threads=$(cat /proc/sys/kernel/pid_max)
+    cat ${f}_ori | perl -ne "s/pid > 999999/pid > ${max_num_threads}/;print;" > $f
+
+    # absolute path where the source resides
+    export COUPLE=$PWD
+    export OASIS_COUPLE=$COUPLE
+    # directory where the mods and libs will be installed
+    export ARCHDIR=${INSTALL_DIR}/oasis3-mct
+    cd util/make_dir
+    mv make.inc make.inc.ori
+    echo 'include $(COUPLE)/util/make_dir/make.gcc' > make.inc
+    wget https://raw.githubusercontent.com/pletzer/nextsimroms_apptainer/refs/heads/main/packages/oasis3-mct/make.gcc
+    cat make.gcc
+    cat make.inc
+    make -f TopMakefileOasis3 static-libs
+
+    # # Build ESMF
+    # version="8.7.0"
+    # cd $BUILD_DIR
+    # wget --no-check-certificate  https://github.com/esmf-org/esmf/archive/refs/tags/v${version}.tar.gz
+    # tar xf v${version}.tar.gz
+    # cd esmf-${version}
+
+    # export ESMF_DIR=$PWD
+    # export ESMF_COMM=openmpi
+    # export ESMF_COMPILER=gfortran
+    # export ESMF_INSTALL_PREFIX=$INSTALL_DIR/esmf-${version}
+    # export ESMF_LAPACK="internal"
+    # # export ESMF_NETCDF="split"
+    # # export ESMF_F90LINKPATHS="-L/opt/conda/lib"
+    # # export ESMF_PIO="OFF"
+    # # export ESMF_NETCDF_INCLUDE="/usr/local/include"
+    # # export ESMF_NETCDF_LIBPATH="/usr/local/lib"
+    # # build debug and optimised versions
+    # make clean
+    # make ESMF_BOPT=g

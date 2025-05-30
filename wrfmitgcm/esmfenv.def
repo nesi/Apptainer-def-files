@@ -1,0 +1,171 @@
+BootStrap: docker
+From: intel/oneapi-hpckit:devel-ubuntu22.04
+
+%environment
+    export WRF_DEPS_DIR=/software
+    export LD_LIBRARY_PATH="$WRF_DEPS_DIR/lib:$LD_LIBRARY_PATH"
+    export PATH="$WRF_DEPS_DIR/bin:$PATH"
+    export NETCDF=$WRF_DEPS_DIR
+    export HDF5=$WRF_DEPS_DIR
+    export PNETCDF=$WRF_DEPS_DIR
+    export CC=icc
+    export CXX=icc
+    export FC=ifort
+    export F77=ifort
+    export MPICC=mpiicc
+    export MPICXX=mpiicc
+    export MPIF77=mpiifort
+    export MPIF90=mpiifort
+
+
+%post
+    apt -y update
+    apt -y install wget
+    apt -y install zlib1g zlib1g-dev
+    apt -y install libsz2 libbz2-dev
+    apt -y install libxml2-dev
+    apt -y install m4 curl libcurl4-openssl-dev
+    apt -y install csh
+    apt -y install file
+    apt -y install vim
+
+    # versions
+    HDF5_VERSION="1.12.2"
+    NETCDF_C_VERSION="4.9.2"
+    NETCDF_FORTRAN_VERSION="4.6.1"
+    NETCDF_CXX_VERSION="4.3.1"
+    PNETCDF_VERSION="1.12.3"
+    WRF_VERSION="4.1.1"
+    ESMF_VERSION="8.5.0"
+
+    export WRF_DEPS_DIR=/software
+
+    # compilers
+    export CC=icc
+    export CXX=icc
+    export FC=ifort
+    export F77=ifort
+    export MPICC=mpiicc
+    export MPICXX=mpiicc
+    export MPIF77=mpiifort
+    export MPIF90=mpiifort
+
+    export ESMF_NETCDF="split"
+    export ESMF_NETCDF_INCLUDE="$WRF_DEPS_DIR/include"
+    export ESMF_NETCDF_LIBPATH="$WRF_DEPS_DIR/lib"
+    export ESMF_ABI="64"
+    export ESMF_BOPT="O"
+    export ESMF_COMM="intelmpi"
+    export ESMF_COMPILER="intel"
+    export ESMF_PNETCDF="standard"
+    export ESMF_PNETCDF_INCLUDE="$WRF_DEPS_DIR/include"
+    export ESMF_PNETCDF_LIBPATH="$WRF_DEPS_DIR/lib"
+    export ESMF_DIR="$WRF_DEPS_DIR/esmf-${ESMF_VERSION}"
+    export ESMF_INSTALL_PREFIX="$WRF_DEPS_DIR"
+    export ESMF_OPENMP="OFF"
+
+    export NETCDF=$WRF_DEPS_DIR
+    export HDF5=$WRF_DEPS_DIR
+    export PNETCDF=$WRF_DEPS_DIR
+
+    export LD_LIBRARY_PATH="$WRF_DEPS_DIR/lib:$LD_LIBRARY_PATH"
+
+    mkdir -p $WRF_DEPS_DIR
+    cd $WRF_DEPS_DIR
+
+    # hdf5
+    HDF5_VERSION_SHORT=$(echo $HDF5_VERSION | awk -F '.' '{print $1"."$2}')
+    wget https://support.hdfgroup.org/ftp/HDF5/releases/hdf5-${HDF5_VERSION_SHORT}/hdf5-${HDF5_VERSION}/src/hdf5-${HDF5_VERSION}.tar.gz
+    tar xf hdf5-${HDF5_VERSION}.tar.gz
+    cd hdf5-${HDF5_VERSION}
+    mkdir build
+    cd build
+    CC=$MPICC FC=$MPIF90 ../configure --prefix=$WRF_DEPS_DIR --enable-parallel --enable-fortran
+    make -j 4
+    make install
+    cd ../..
+    rm -rf hdf5-${HDF5_VERSION}
+    ls $WRF_DEPS_DIR/lib
+    ls $WRF_DEPS_DIR/include
+    ls $WRF_DEPS_DIR/bin
+
+    # netcdf-c
+    wget https://downloads.unidata.ucar.edu/netcdf-c/${NETCDF_C_VERSION}/netcdf-c-${NETCDF_C_VERSION}.tar.gz
+    tar xf netcdf-c-${NETCDF_C_VERSION}.tar.gz
+    cd netcdf-c-${NETCDF_C_VERSION}
+    mkdir build
+    cd build
+    CPPFLAGS="-I${WRF_DEPS_DIR}/include" \
+     LDFLAGS="-L${WRF_DEPS_DIR}/lib -lhdf5 -lhdf5_hl" \
+     CC=$MPICC ../configure --prefix=$WRF_DEPS_DIR 
+    make -j 4
+    make install
+    cd ../..
+    rm -rf netcdf-c-${NETCDF_C_VERSION}
+    ls $WRF_DEPS_DIR/lib
+    ls $WRF_DEPS_DIR/include
+    ls $WRF_DEPS_DIR/bin
+
+    # netcdf-fortran
+    wget https://downloads.unidata.ucar.edu/netcdf-fortran/${NETCDF_FORTRAN_VERSION}/netcdf-fortran-${NETCDF_FORTRAN_VERSION}.tar.gz
+    tar xf netcdf-fortran-${NETCDF_FORTRAN_VERSION}.tar.gz
+    cd netcdf-fortran-${NETCDF_FORTRAN_VERSION}
+    mkdir build
+    cd build
+    CPPFLAGS="$(${WRF_DEPS_DIR}/bin/nc-config --cflags)" LDFLAGS="$(${WRF_DEPS_DIR}/bin/nc-config --libs)" \
+    ../configure --prefix=$WRF_DEPS_DIR
+    make
+    make install
+    cd ../..
+    rm -rf netcdf-fortran-${NETCDF_FORTRAN_VERSION}
+
+    # netcdf-c++
+    cd $WRF_DEPS_DIR
+    wget https://downloads.unidata.ucar.edu/netcdf-cxx/${NETCDF_CXX_VERSION}/netcdf-cxx4-${NETCDF_CXX_VERSION}.tar.gz
+    tar xf netcdf-cxx4-${NETCDF_CXX_VERSION}.tar.gz
+    cd netcdf-cxx4-${NETCDF_CXX_VERSION}
+    mkdir build
+    cd build
+    CC=$CC CXX=$CXX CPPFLAGS="$(${WRF_DEPS_DIR}/bin/nc-config --cflags)" LDFLAGS="$(${WRF_DEPS_DIR}/bin/nc-config --libs)" \
+    ../configure --prefix=$WRF_DEPS_DIR
+    make
+    make install
+    cd ../..
+    rm -rf netcdf-cxx4-${NETCDF_CXX_VERSION}.tar.gz
+    ls $WRF_DEPS_DIR/lib
+    ls $WRF_DEPS_DIR/include
+    ls $WRF_DEPS_DIR/bin
+
+    # pnetcdf
+    wget https://parallel-netcdf.github.io/Release/pnetcdf-${PNETCDF_VERSION}.tar.gz
+    tar xf pnetcdf-${PNETCDF_VERSION}.tar.gz
+    cd pnetcdf-${PNETCDF_VERSION}
+    mkdir build
+    cd build
+    ../configure --prefix=$WRF_DEPS_DIR --with-netcdf4=$WRF_DEPS_DIR
+    make
+    make install
+    cd ../..
+    rm -rf pnetcdf-${PNETCDF_VERSION}.tar.gz
+    ls $WRF_DEPS_DIR/lib
+    ls $WRF_DEPS_DIR/include
+    ls $WRF_DEPS_DIR/bin
+
+    # esmf
+    cd $WRF_DEPS_DIR
+    wget https://github.com/esmf-org/esmf/archive/refs/tags/v${ESMF_VERSION}.tar.gz
+    tar xf v${ESMF_VERSION}.tar.gz
+    cd esmf-${ESMF_VERSION}
+    echo "ESMF_DIR=$ESMF_DIR"
+    echo "ESMF_ABI=$EMSF_ABI"
+    echo "ESMF_BOPT=$ESMF_BOPT"
+    echo "ESMF_COMPILER=$ESMF_COMPILER"
+    echo "ESMF_COMM=$ESMF_COMM"
+    make 
+    make install
+    cd $WRF_DEPS_DIR
+    rm -rf $WRF_DEPS_DIR/esmf-${ESMF_VERSION}
+    ls $WRF_DEPS_DIR/lib
+    ls $WRF_DEPS_DIR/include
+    ls $WRF_DEPS_DIR/bin
+

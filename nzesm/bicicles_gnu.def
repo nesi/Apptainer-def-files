@@ -1,0 +1,117 @@
+BootStrap: docker
+From: ubuntu:latest
+
+%help
+    Build a portable environment for the BICICLES code
+
+%setup
+    # create directory to build chombo and other packages in the container
+    mkdir -p ${APPTAINER_ROOTFS}/usr/local/build
+    mkdir -p ${APPTAINER_ROOTFS}/opt/nzesm_apptainer
+
+%files
+    # copy files from host to the container prior to calling %post
+    # SOURCE DESTINATION. SOURCE is always on the host. DESTINATION is by default in container
+    # ADAPT!!!!!
+    /home/cdjs/Chombo-3.2 /usr/local/build
+#    /home/pletzera/bisicles_gnu /usr/local/build/bisicles_gnu
+    packages/unicicles/wrappers/ukesm-ice_NETCDF/Makefile.gnu /opt/nzesm_apptainer/Makefile.gnu
+    
+%environment
+    export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+
+%post
+
+    apt-get update && apt-get upgrade -y
+
+    # May be required for rose/fcm... ?
+    echo "> Setting timezone to UTC non-interactively..."
+    ln -fs /usr/share/zoneinfo/UTC /etc/localtime
+    apt-get install -y tzdata
+    dpkg-reconfigure --frontend noninteractive tzdata
+
+    apt-get install -y git vim perl csh python3 wget file subversion cmake cmake-curses-gui automake apt-file
+    apt-get install -y gcc gfortran g++
+
+    # need to check if we need the same MPI as UM
+    apt-get install -y openmpi-bin openmpi-common
+    apt-get install -y libnetcdf-pnetcdf-dev libhdf5-openmpi-dev libnetcdf-c++4-dev libnetcdf-dev libnetcdff-dev
+
+    # libmkl-full-dev is big, may want to break it into the components we need
+    apt-get install -y libfftw3-dev libmkl-full-dev
+
+    ln -s /usr/bin/python3 /usr/bin/python
+
+    # local copy of the code, want to get rid of
+    export BIKEFILES=$HOME/unicicles_files/
+
+    export HDF5_LIBDIR=/usr/lib/x86_64-linux-gnu/hdf5/openmpi/
+    export HDF5_INCDIR=/usr/include/hdf5/openmpi/
+    export NETCDF_LIBDIR=/usr/lib/x86_64-linux-gnu/
+    export NETCDF_INCDIR=/usr/include
+    export PYTHONLIBS=/usr/lib/python3.12
+
+    export BUILD_DIR=/usr/local/build
+    export BISICLES_HOME=$BUILD_DIR
+    export GLIM_DIR=/usr/local
+
+    mkdir -p $BUILD_DIR
+
+    echo "\n\nBuilding chombo..."
+    cd $BUILD_DIR
+    # svn co https://anag-repo.lbl.gov/svn/Chombo/release/3.2 Chombo #requires an anag repository account
+    # the git repo is missing CoDimCopier.H
+    #git clone https://github.com/applied-numerical-algorithms-group-lbnl/Chombo_3.2.git
+    ln -s Chombo-3.2 Chombo
+    cd Chombo/lib
+    wget https://raw.githubusercontent.com/pletzer/nzesm_apptainer/main/packages/chombo/gnu/Make.defs.local
+    mv Make.defs.local mk/
+    make all
+
+    echo "\n\nBuilding bisicles..."
+    cd $BUILD_DIR
+    git clone https://github.com/ggslc/bisicles-uob.git
+    cd bisicles-uob/code/exec2D
+    # this assumes that bisicles-uob and Chombo are checkout in the same directory
+    make clean
+    make
+
+    echo "\n\nBuilding cdriver wrapper..."
+    cd $BUILD_DIR
+    cd bisicles-uob/code/cdriver
+    FC=gfortran make -f GNUmakefile ftestwrapper
+
+    echo "\n\nBuilding glimmer-cism..."
+    cd $BUILD_DIR
+    git clone https://github.com/ggslc/unicicles.git
+    cd unicicles/glimmer-cism
+    ./bootstrap
+    cd ..
+    mkdir parallel
+    cd parallel
+    FC=mpif90 CXX=g++ \
+    FCFLAGS="-fno-range-check -ffree-line-length-0 -DBISICLES_CDRIVER -DNO_RESCALE -fallow-argument-mismatch -fallow-invalid-boz -g -I$BISICLES_HOME/bisicles-uob/code/src " \
+    LDFLAGS=" -L$BISICLES_HOME/bisicles-uob/code/lib -lBisicles2d.Linux.64.mpicxx.gfortran.OPT.MPI -lChomboLibs2d.Linux.64.mpicxx.gfortran.OPT.MPI -lstdc++ -lcrypt -lpthread -ldl -lutil -lm " \
+    ../glimmer-cism/configure \
+    --with-netcdf-lib=$NETCDF_LIBDIR --with-netcdf-include=$NETCDF_INCDIR \
+    --with-hdf5-lib=$HDF5_LIBDIR --with-hdf5-include=$HDF5_INCDIR \
+    --enable-mpi --prefix=/usr/local/ --disable-python
+    make
+    make install
+
+    echo "Building unicicles wrapper from github..."
+    ls -l $BUILD_DIR
+    echo "2..."
+    ls -l $BUILD_DIR/unicicles
+    echo "3..."
+    ls -l $BUILD_DIR/unicicles/wrappers
+    echo "4..."
+    ls -l $BUILD_DIR/unicicles/wrappers/ukesm-ice_NETCDF
+    cd $BUILD_DIR/unicicles/wrappers/ukesm-ice_NETCDF
+    cp /opt/nzesm_apptainer/Makefile.gnu .
+#    wget https://raw.githubusercontent.com/pletzer/nzesm_apptainer/refs/heads/main/packages/unicicles/wrappers/ukesm-ice_NETCDF/Makefile.gnu
+    make clean -f Makefile.gnu
+    make -f Makefile.gnu
+    # cp $BIKEFILES/Makefile.maui .
+    # make clean -f Makefile.maui
+    # make -f Makefile.maui
