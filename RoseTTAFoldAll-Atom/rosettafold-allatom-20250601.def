@@ -1,0 +1,167 @@
+Bootstrap: docker
+From: nvidia/cuda:11.8.0-base-ubuntu22.04
+
+%arguments
+    DEBIAN_FRONTEND=noninteractive
+
+%setup
+    # Copy source code to container during build
+    if [ -d "${APPTAINER_ROOTFS}/opt/RoseTTAFold-All-Atom" ]; then
+        rm -rf "${APPTAINER_ROOTFS}/opt/RoseTTAFold-All-Atom"
+    fi
+    mkdir -p "${APPTAINER_ROOTFS}/opt"
+    cp -r . "${APPTAINER_ROOTFS}/opt/RoseTTAFold-All-Atom/"
+
+%files
+    # Copy micromamba files from the micromamba image
+    # Note: These files need to be extracted from mambaorg/micromamba:1.5.0 first
+    # You can do this by running: docker create --name temp mambaorg/micromamba:1.5.0 && docker cp temp:/bin/micromamba ./micromamba_files/ && docker rm temp
+    # micromamba_files/micromamba /bin/micromamba
+    # micromamba_files/_activate_current_env.sh /usr/local/bin/_activate_current_env.sh
+    # micromamba_files/_dockerfile_shell.sh /usr/local/bin/_dockerfile_shell.sh
+    # micromamba_files/_entrypoint.sh /usr/local/bin/_entrypoint.sh
+    # micromamba_files/_dockerfile_initialize_user_accounts.sh /usr/local/bin/_dockerfile_initialize_user_accounts.sh
+    # micromamba_files/_dockerfile_setup_root_prefix.sh /usr/local/bin/_dockerfile_setup_root_prefix.sh
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    
+    # Set up micromamba environment variables for build (as root)
+    export MAMBA_USER=root
+    export MAMBA_USER_ID=0
+    export MAMBA_USER_GID=0
+    export MAMBA_ROOT_PREFIX="/opt/conda"
+    export MAMBA_EXE="/bin/micromamba"
+    
+    # Install system dependencies first (including wget and bzip2)
+    apt-get update && apt-get install -y \
+        aria2 \
+        build-essential \
+        curl \
+        git \
+        tar \
+        wget \
+        unzip \
+        vim \
+        bzip2 \
+        && rm -rf /var/lib/apt/lists/*
+    
+    # Download and install micromamba directly
+    cd /tmp
+    wget -O micromamba.tar.bz2 https://micro.mamba.pm/api/micromamba/linux-64/latest
+    tar -xvf micromamba.tar.bz2 bin/micromamba
+    mv bin/micromamba /bin/micromamba
+    chmod +x /bin/micromamba
+    rm micromamba.tar.bz2
+    
+    # Create micromamba support scripts
+    cat > /usr/local/bin/_activate_current_env.sh << 'EOF'
+#!/bin/bash
+# Simple activation script that just sets PATH
+export PATH="/opt/conda/bin:$PATH"
+if [ -f /opt/conda/etc/profile.d/conda.sh ]; then
+    source /opt/conda/etc/profile.d/conda.sh
+fi
+EOF
+    chmod +x /usr/local/bin/_activate_current_env.sh
+    
+    # Create conda directory structure with proper permissions
+    mkdir -p /opt/conda
+    chmod -R 755 /opt/conda
+    
+    # Initialize micromamba (just create the directory structure)
+    export PATH="/opt/conda/bin:$PATH"
+    /bin/micromamba shell init -s bash
+    
+    # Install python directly in the root prefix (this becomes the "base" environment)
+    /bin/micromamba install python=3.11 -c conda-forge -y
+    /bin/micromamba clean --all --yes
+    
+    # Install SE3Transformer (check if it exists first)
+    cd /opt
+    if [ -f "./RoseTTAFold-All-Atom/rf2aa/SE3Transformer/setup.py" ] || [ -f "./RoseTTAFold-All-Atom/rf2aa/SE3Transformer/pyproject.toml" ]; then
+        /opt/conda/bin/pip --no-cache-dir install -e ./RoseTTAFold-All-Atom/rf2aa/SE3Transformer --no-deps
+    else
+        echo "SE3Transformer directory not found or missing setup files, skipping..."
+        ls -la ./RoseTTAFold-All-Atom/rf2aa/ || echo "rf2aa directory not found"
+    fi
+    
+    # Run install dependencies script
+    cd /opt/RoseTTAFold-All-Atom
+    if [ -f "install_dependencies.sh" ]; then
+        bash install_dependencies.sh
+    else
+        echo "install_dependencies.sh not found, skipping..."
+    fi
+    
+    # Install BLAST
+    wget https://ftp.ncbi.nlm.nih.gov/blast/executables/legacy.NOTSUPPORTED/2.2.26/blast-2.2.26-x64-linux.tar.gz
+    mkdir -p blast-2.2.26
+    tar -xf blast-2.2.26-x64-linux.tar.gz -C blast-2.2.26
+    cp -r blast-2.2.26/blast-2.2.26/ blast-2.2.26_bk
+    rm -r blast-2.2.26
+    mv blast-2.2.26_bk/ blast-2.2.26
+    rm blast-2.2.26-x64-linux.tar.gz
+    
+    # Install conda environment from yaml (use full path to micromamba)
+    if [ -f "environment.yaml" ]; then
+        CONDA_OVERRIDE_CUDA="11.8" /bin/micromamba install -y -f environment.yaml
+        /bin/micromamba clean --all --yes
+    fi
+    
+    # Set proper permissions for all installed software
+    chmod -R 755 /opt/conda
+    chmod -R 755 /opt/RoseTTAFold-All-Atom
+    find /opt/conda -type f -name "*.py" -exec chmod 644 {} \;
+    find /opt/conda -type f -executable -exec chmod 755 {} \;
+
+%environment
+    # Set up micromamba environment variables (will work for any user)
+    export MAMBA_ROOT_PREFIX="/opt/conda"
+    export MAMBA_EXE="/bin/micromamba"
+    
+    # Database paths
+    export DB_UR30=/mnt/databases/rfaa/latest/UniRef30_2020_06/UniRef30_2020_06
+    export DB_BFD=/mnt/databases/rfaa/latest/bfd/bfd_metaclust_clu_complete_id30_c90_final_seq.sorted_opt
+    export BLASTMAT=/opt/RoseTTAFold-All-Atom/blast-2.2.26/data/
+    
+    # Add conda to PATH
+    export PATH="/opt/conda/bin:$PATH"
+    
+    # Add blast to PATH
+    export PATH="/opt/RoseTTAFold-All-Atom/blast-2.2.26/bin:$PATH"
+
+%runscript
+    # Simple activation - just ensure conda is in PATH
+    export PATH="/opt/conda/bin:$PATH"
+    if [ -f /opt/conda/etc/profile.d/conda.sh ]; then
+        source /opt/conda/etc/profile.d/conda.sh
+    fi
+    exec "$@"
+
+%startscript
+    # For apptainer instance start
+    export PATH="/opt/conda/bin:$PATH"
+    if [ -f /opt/conda/etc/profile.d/conda.sh ]; then
+        source /opt/conda/etc/profile.d/conda.sh
+    fi
+
+%labels
+    Author RoseTTAFold-All-Atom Team
+    Version 1.0
+    Description RoseTTAFold-All-Atom protein structure prediction
+
+%help
+    This container runs RoseTTAFold-All-Atom for protein structure prediction.
+    
+    Usage:
+        apptainer run rosettafold.sif [command]
+        apptainer exec rosettafold.sif [command]
+        apptainer shell rosettafold.sif
+    
+    The conda environment is automatically activated for all entry points.
+    
+    Database paths are set to:
+    - DB_UR30: /mnt/databases/rfaa/latest/UniRef30_2020_06/UniRef30_2020_06
+    - DB_BFD: /mnt/databases/rfaa/latest/bfd/bfd_metaclust_clu_complete_id30_c90_final_seq.sorted_opt
+    - BLASTMAT: /opt/RoseTTAFold-All-Atom/blast-2.2.26/data/
