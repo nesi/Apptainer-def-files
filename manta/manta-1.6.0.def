@@ -1,0 +1,95 @@
+BootStrap: docker
+From: ubuntu:20.04
+Stage: 0
+
+%environment
+	export DEBIAN_FRONTEND=noninteractive
+	export SAMTOOLS_VERSION=1.9
+
+%post
+	export DEBIAN_FRONTEND=noninteractive
+	export SAMTOOLS_VERSION=1.9
+	export APT_LISTCHANGES_FRONTEND=none
+	
+	# Disable privilege dropping for apt
+	echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/90sandbox
+	
+	apt-get -qqy update --fix-missing
+	apt-get -qqy dist-upgrade
+	apt-get -qqy install --no-install-recommends \
+                 ca-certificates \
+                 libbz2-dev \
+                 libcurl4-openssl-dev \
+                 liblzma-dev \
+                 libncurses5-dev \
+                 autoconf \
+                 automake \
+                 bzip2 \
+                 gcc \
+                 make \
+                 wget \
+                 zlib1g-dev
+	
+	wget https://github.com/samtools/samtools/releases/download/${SAMTOOLS_VERSION}/samtools-${SAMTOOLS_VERSION}.tar.bz2
+	tar xjf samtools-${SAMTOOLS_VERSION}.tar.bz2
+	cd samtools-${SAMTOOLS_VERSION}
+	./configure --without-curses
+	make -s all all-htslib
+	make install install-htslib
+	cd /
+	rm -rf samtools-${SAMTOOLS_VERSION}*
+	
+	apt-get -qqy purge autoconf automake bzip2 gcc make wget
+	apt-get -qqy clean
+	rm -rf /tmp/* /var/tmp/* /var/cache/apt/* /var/lib/apt/lists/* /usr/share/man/?? /usr/share/man/??_*
+
+############### stage 1: install Manta
+BootStrap: docker
+From: ubuntu:20.04
+
+# copy from previous stage the binaries from samtools build
+%files from 0
+    /usr/local/bin/* /usr/local/bin/
+    /usr/local/lib/* /usr/local/lib/
+
+%environment
+	export MANTA_RELEASE=1.6.0
+	export MANTA_INSTALL_DIR=/usr/bin/manta/
+	export DEBIAN_FRONTEND=noninteractive
+
+%post
+	export MANTA_RELEASE=1.6.0
+	export MANTA_INSTALL_DIR=/usr/bin/manta/
+	export DEBIAN_FRONTEND=noninteractive
+	export APT_LISTCHANGES_FRONTEND=none
+	
+	# Disable privilege dropping for apt
+	echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/90sandbox
+	
+	apt-get -qqy update --fix-missing
+	apt-get -qqy dist-upgrade
+	apt-get -qqy install --no-install-recommends \
+                 bcftools \
+                 ca-certificates \
+                 python2.7 \
+                 tabix \
+                 wget \
+                 zlib1g-dev
+	
+	cd /opt
+	wget -q https://github.com/Illumina/manta/releases/download/v${MANTA_RELEASE}/manta-${MANTA_RELEASE}.centos6_x86_64.tar.bz2
+	tar -xjf manta-${MANTA_RELEASE}.centos6_x86_64.tar.bz2
+	mv /opt/manta-${MANTA_RELEASE}.centos6_x86_64 ${MANTA_INSTALL_DIR}
+	ln -s $(which python2.7) /usr/bin/python2
+	python2 ${MANTA_INSTALL_DIR}/bin/runMantaWorkflowDemo.py
+	rm -rf MantaDemoAnalysis
+	rm -rf ${MANTA_INSTALL_DIR}share/demo
+	
+	apt-get -qqy remove wget ca-certificates
+	apt-get -qqy autoremove --purge
+	apt-get -qqy clean
+	rm -rf manta-${MANTA_RELEASE}.centos6_x86_64.tar.bz2 /tmp/* /var/tmp/* /var/cache/apt/* /var/lib/apt/lists/* /usr/share/man/?? /usr/share/man/??_*
+
+%test
+	samtools --help
+	python2 ${MANTA_INSTALL_DIR}/bin/configManta.py --help
