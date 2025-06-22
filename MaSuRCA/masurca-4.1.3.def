@@ -1,0 +1,40 @@
+Bootstrap: docker
+From: ubuntu:jammy
+
+%labels
+Maintainer dinindu.senanayake@nesi.org.nz
+Version 4.1.3
+
+%environment
+  PATH=/opt/MaSuRCA-4.1.3/bin:$PATH
+  export PATH
+  export LANG=en_NZ.UTF-8
+  export LC_ALL=en_NZ.UTF-8
+  export LANGUAGE=en_NZ.UTF-8
+
+%post
+  ## Download build prerequisites
+  apt-get update && apt-get install -y \
+    curl build-essential libboost-dev libbz2-dev wget zlib1g-dev locales libenv-path-perl
+  locale-gen en_NZ.UTF-8
+
+  ## Build
+  cd /opt
+  curl -s -L https://github.com/alekseyzimin/masurca/releases/download/v4.1.3/MaSuRCA-4.1.3.tar.gz | tar xz
+  cd MaSuRCA-4.1.3
+  # Fix the install script from exiting with a copy error
+  sed -i 's/cp -a ..\/Flye /cd /' install.sh
+  ./install.sh
+
+  ## Do some cleanup
+  apt-get -y remove --purge build-essential
+  apt-get -y clean all 
+  apt-get -y autoremove --purge
+
+%runscript
+ if [ -x /opt/MaSuRCA-4.1.3/bin/$APPTAINER_NAME ]; then
+    exec $APPTAINER_NAME "$@"
+ else
+    /bin/echo -e "This Apptainer image cannot provide a single entrypoint. Please use \"apptainer exec $APPTAINER_NAME <cmd>\", where <cmd> is one of the following:\n"
+    exec ls /opt/MaSuRCA-4.1.3/bin
+ fi
