@@ -1,0 +1,53 @@
+Bootstrap: docker 
+From: ubuntu:22.04  
+
+%labels 
+Version v0.12 
+Installation of pytorch and pytorch lightning < 1.9, segmentation_models pytorch and optuna  
+
+%environment 
+export LC_ALL=C 
+export LC_NUMERIC=en_GB.UTF-8 
+export PATH="/opt/miniconda3/bin:$PATH" 
+export JAVA_HOME="/usr/lib/jvm/java-8-openjdk-amd64/jre/"  
+
+%post 
+apt-get update && apt-get install -y --no-install-recommends \
+    openslide-tools \
+    libopenjp2-7-dev \
+    libopenjp2-tools \
+    clinfo \
+    ocl-icd-opencl-dev \
+    ocl-icd-libopencl1 \
+    opencl-headers \
+    pocl-opencl-icd \
+    g++ \
+    gcc \
+    libpixman-1-0 \
+    libblas-dev \
+    liblapack-dev \
+    wget \
+    openjdk-8-jre \
+    openjdk-8-jdk \
+    apt-utils \
+    git \
+    gfortran \
+    software-properties-common
+
+mkdir ~/TMP 
+wget -O miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-py39_25.1.1-2-Linux-x86_64.sh 
+TMPDIR=~/TMP bash miniconda.sh -bfp /opt/miniconda3/ 
+rm -f miniconda.sh 
+rm -rf /var/lib/apt/lists/* 
+mkdir /var/inputdata 
+mkdir /var/outputdata        
+
+export PATH="/opt/miniconda3/bin:$PATH" 
+echo 'export PATH="/opt/miniconda3/bin:$PATH"' >> $APPTAINER_ENVIRONMENT 
+echo 'export JAVA_HOME="/usr/lib/jvm/java-8-openjdk-amd64/jre/"' >> $APPTAINER_ENVIRONMENT 
+export JAVA_HOME="/usr/lib/jvm/java-8-openjdk-amd64/jre/"        
+
+conda install -y pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia 
+pip3 install spams && pip3 install mkl && pip3 install staintools 
+pip3 install tensorboard 
+pip3 install jupyter -U && pip3 install jupyterlab && pip3 install albumentations && pip3 install scipy && pip3 install ipykernel && pip3 install git+https://github.com/qubvel/segmentation_models.pytorch && pip3 install pytorch-lightning==2.4.0 && pip3 install optuna && pip3 install h5py && pip3 install matplotlib && pip3 install opencv-python
