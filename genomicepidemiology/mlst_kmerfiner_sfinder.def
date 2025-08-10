@@ -1,0 +1,98 @@
+Bootstrap: docker
+From: debian:bullseye
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    export PATH=$PATH:/usr/src
+    export MLST_DB=/mlst_db
+
+%post
+    # Set noninteractive frontend
+    export DEBIAN_FRONTEND=noninteractive
+    
+    # Update and install system dependencies
+    apt-get update -qq
+    apt-get install -y -qq git \
+        apt-utils \
+        wget \
+        python3-pip \
+        ncbi-blast+ \
+        libz-dev
+    rm -rf /var/cache/apt/* /var/lib/apt/lists/*
+    
+    # Reset frontend
+    export DEBIAN_FRONTEND=Teletype
+    
+    # Install python dependencies
+    pip3 install -U biopython==1.73 tabulate cgecore==1.4.4
+    
+    # Install kma
+    git clone --branch 1.4.3 --depth 1 https://bitbucket.org/genomicepidemiology/kma.git
+    cd kma && make
+    mv kma* /bin/
+    cd ..
+    rm -rf kma
+    
+    # Clone and install speciesfinder
+    git clone --depth 1 https://bitbucket.org/genomicepidemiology/speciesfinder.git
+    chmod 755 speciesfinder/speciesfinder.py
+    ln -s /speciesfinder/speciesfinder.py /usr/src/speciesfinder.py
+
+    # Clone and install kmerfinder
+    git clone --depth 1 https://bitbucket.org/genomicepidemiology/kmerfinder.git
+    chmod 755 kmerfinder/kmerfinder_run.py
+    ln -s /kmerfinder/kmerfinder_run.py /usr/src/kmerfinder.py
+
+    # Install MLST database
+    cd /
+    git clone https://bitbucket.org/genomicepidemiology/mlst_db.git
+    cd mlst_db
+    python3 INSTALL.py kma_index
+    cd /
+    
+    # Create necessary directories
+    mkdir -p /database /test /taxonomy /results
+    
+    # Setup .bashrc file for convenience during debugging
+    echo "alias ls='ls -h --color=tty'" >> ~/.bashrc
+    echo "alias ll='ls -lrt'" >> ~/.bashrc
+    echo "alias l='less'" >> ~/.bashrc
+    echo "alias du='du -hP --max-depth=1'" >> ~/.bashrc
+    echo "alias cwd='readlink -f .'" >> ~/.bashrc
+    echo "PATH=\$PATH:/usr/src" >> ~/.bashrc
+
+%files
+    # Copy test data and scripts for mlst (adjust paths as needed)
+    ./mlst/test/database/ /database/
+    ./mlst/test/test* /test/
+    
+    # Copy test data for kmerfinder (adjust paths as needed)
+    ./kmerfinder/test/taxonomy/* /taxonomy/
+    
+    # Copy main scripts (adjust paths as needed)
+    ./mlst/mlst.py /usr/src/mlst.py
+
+%runscript
+    # Default behavior - start bash shell
+    # Users can override with specific commands
+    exec /bin/bash "$@"
+
+%labels
+    Author "Dinindu Senanayake"
+    Version "2025-08-11"
+    Description "Container with mlst, kmerfinder, and speciesfinder tools for genomic analysis"
+
+%help
+    This container includes three genomic analysis tools:
+    
+    1. mlst.py - Multi-Locus Sequence Typing
+    2. kmerfinder.py - Species identification using k-mers
+    3. speciesfinder.py - Species identification tool
+    
+    Usage examples:
+    - Run mlst: apptainer exec container.sif mlst.py [options]
+    - Run kmerfinder: apptainer exec container.sif kmerfinder.py [options]  
+    - Run speciesfinder: apptainer exec container.sif speciesfinder.py [options]
+    - Interactive shell: apptainer shell container.sif
+    
+    All tools are available in the PATH.
