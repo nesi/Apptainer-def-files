@@ -5,6 +5,7 @@ From: debian:bullseye
     export DEBIAN_FRONTEND=noninteractive
     export PATH=$PATH:/usr/src
     export MLST_DB=/mlst_db
+    export SPECIESFINDER_DB=/speciesfinder_db
 
 %post
     # Set noninteractive frontend
@@ -49,6 +50,13 @@ From: debian:bullseye
     cd mlst_db
     python3 INSTALL.py kma_index
     cd /
+
+    # Install speciesfinder database
+    cd /
+    git clone https://bitbucket.org/genomicepidemiology/speciesfinder_db.git
+    cd speciesfinder_db
+    python3 INSTALL.py kma_index
+
     
     # Create necessary directories
     mkdir -p /database /test /taxonomy /results
