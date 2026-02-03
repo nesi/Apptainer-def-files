@@ -1,0 +1,19 @@
+Bootstrap: docker
+From: ollama/ollama:0.15.0-rc0
+
+%environment
+    export DEBIAN_FRONTEND="noninteractive"
+    export LANG=en_NZ.utf8
+    export OLLAMA_MODELS=/opt/nesi/share/LLM/ollama
+
+%runscript
+    ollama $@
+
+%startscript
+    ollama serve
+
+
+%labels
+    Author Wes Harrell
+    Version v1.0
+    Description Ollama
