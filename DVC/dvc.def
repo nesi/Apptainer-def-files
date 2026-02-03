@@ -1,0 +1,24 @@
+Bootstrap: docker
+From: debian:bookworm-slim
+
+%environment
+    export DEBIAN_FRONTEND="noninteractive"
+    export LANG=en_NZ.utf8
+
+%post
+    # Update and install system dependencies
+    apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y pipx
+
+    PIPX_BIN_DIR=/usr/bin pipx install dvc
+
+    
+    # Clean up apt cache
+    rm -rf /var/lib/apt/lists/*
+
+%runscript
+    dvc $@
+
+%labels
+    Author Wes Harrell
+    Version v1.0
+    Description Data Version Control - DVC

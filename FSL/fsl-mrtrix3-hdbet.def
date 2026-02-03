@@ -1,5 +1,5 @@
 Bootstrap: docker
-From: ubuntu:24.04
+From: ubuntu:22.04
 
 %environment
     export DEBIAN_FRONTEND="noninteractive"
@@ -8,7 +8,7 @@ From: ubuntu:24.04
     export PATH=$FSLDIR/bin:$PATH
     export FSLMULTIFILEQUIT=TRUE
     export FSLOUTPUTTYPE=NIFTI_GZ
-    #export PATH="/opt/mrtrix3/bin:${PATH}"
+    export PATH="/opt/mrtrix3/bin:${PATH}"
     # FSL conda environment
     export FSLCONDIR=/usr/local/fsl/bin
     export PATH="${FSLCONDIR}:${PATH}"
@@ -92,21 +92,48 @@ From: ubuntu:24.04
     chmod 777 /tmp/numba_cache
 
     # Install FSL
-    wget https://fsl.fmrib.ox.ac.uk/fsldownloads/fslconda/releases/getfsl.sh
-    sh getfsl.sh /usr/local/fsl
+    wget https://fsl.fmrib.ox.ac.uk/fsldownloads/fslconda/releases/fslinstaller.py
+    python ./fslinstaller.py -d /usr/local/fsl/ --skip_registration
 
     # Install additional packages into FSL's conda environment
-    # /usr/local/fsl/bin/conda install -y -c conda-forge \
-#####   jupyterlab \
-#####   numpy \
-#####   scipy \
-#####   pandas \
-#####   matplotlib \
-#####   nilearn \
-#####   mne \
-#####   numba
+    /usr/local/fsl/bin/conda install -y -c conda-forge \
+        jupyterlab \
+        numpy \
+        scipy \
+        pandas \
+        matplotlib \
+        nilearn \
+        mne \
+        numba
+
+    # Install HD-BET
+    git clone https://github.com/MIC-DKFZ/HD-BET && \
+        cd HD-BET && \
+        sed -i '/torch>=/d' pyproject.toml && \
+        sed -i '/torch>=/d' requirements.txt && \
+        pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
+        pip install -e .
+
+    # Install MRtrix3
+    cd /opt
+    git clone https://github.com/MRtrix3/mrtrix3.git
+    cd /opt/mrtrix3
+    ./configure -nogui
+    ./build
+
+%test
+    # Create test script that properly configures environment
+    cat << 'EOF' > /tmp/test.py
+import os
+os.environ['NUMBA_CACHE_DIR'] = '/tmp/numba_cache'
+import nilearn
+import numpy
+import mne
+print("Imports successful!")
+EOF
+    python3 /tmp/test.py
 
 %labels
-    Author Wes Harrell
+    Author Your Name
     Version v1.0
-    Description Neuroimaging container with FSL
+    Description Neuroimaging container with FSL, MRtrix3, and HD-BET
