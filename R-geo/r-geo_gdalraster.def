@@ -1,0 +1,20 @@
+Bootstrap: docker
+From: rocker/geospatial
+
+%environment
+    export DEBIAN_FRONTEND="noninteractive"
+
+%post
+    # Update and install system dependencies
+    apt-get update && apt-get install -y \
+        curl git less wget
+
+    R -e "install.packages('gdalraster',dependencies=TRUE, repos='https://cran.stat.auckland.ac.nz/')"
+
+    # Clean up apt cache
+    rm -rf /var/lib/apt/lists/*
+
+%labels
+    Author Wes Harrell
+    Version v1.0
+    Description R-Geo container to mirror lmod
