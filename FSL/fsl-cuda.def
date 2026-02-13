@@ -1,0 +1,112 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+%environment
+    export DEBIAN_FRONTEND="noninteractive"
+    export LANG=en_NZ.utf8
+    export FSLDIR=/usr/local/fsl
+    export PATH=$FSLDIR/bin:$PATH
+    export FSLMULTIFILEQUIT=TRUE
+    export FSLOUTPUTTYPE=NIFTI_GZ
+    #export PATH="/opt/mrtrix3/bin:${PATH}"
+    # FSL conda environment
+    export FSLCONDIR=/usr/local/fsl/bin
+    export PATH="${FSLCONDIR}:${PATH}"
+    # Add other FSL-specific environment variables
+    export FSLWISH="${FSLDIR}/bin/wish"
+    export FSLTCLSH="${FSLDIR}/bin/tclsh"
+    export FSLMULTIFILEQUIT=TRUE
+    export FSLOUTPUTTYPE=NIFTI_GZ
+    # Set cache directory for Numba
+    export NUMBA_CACHE_DIR=/tmp/numba_cache
+
+%post
+    # Update and install system dependencies
+    apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        curl \
+        git \
+        ldap-utils \
+        libnss-ldapd \
+        libpam-ldapd \
+        less \
+        nano \
+        nodejs \
+        nscd \
+        nslcd \
+        python-is-python3 \
+        python3 \
+        python3-pip \
+        rsync \
+        unzip \
+        vim \
+        wget \
+        zip \
+        file \
+        dc \
+        mesa-utils \
+        pulseaudio \
+        libquadmath0 \
+        libgtk2.0-0 \
+        firefox \
+        libgomp1 \
+        libatlas-base-dev \
+        gfortran \
+        libhdf5-dev \
+        libblas-dev \
+        liblapack-dev \
+        libfreetype6-dev
+    
+    apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        libeigen3-dev \
+        zlib1g-dev \
+        libqt5opengl5-dev \
+        libqt5svg5-dev \
+        libgl1-mesa-dev \
+        libfftw3-dev \
+        libtiff5-dev \
+        libpng-dev \
+        libssl-dev \
+        cmake \
+        ninja-build \
+        libx11-6 \
+        libxext6 \
+        libxt6 \
+        libxmu6 \
+        libxft2 \
+        libxinerama1 \
+        ca-certificates
+
+    # Install CUDA
+    apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        libcublas12 \
+        nvidia-cuda-dev \
+        nvidia-cuda-toolkit \
+        nvidia-cudnn
+
+
+
+
+
+    # Clean up apt cache
+    rm -rf /var/lib/apt/lists/*
+
+    # Set environment variables for the build process
+    export FSLDIR=/usr/local/fsl
+    export PATH=$FSLDIR/bin:$PATH
+    export FSLCONDIR=/usr/local/fsl/bin
+    export PATH="${FSLCONDIR}:${PATH}"
+    export NUMBA_CACHE_DIR=/tmp/numba_cache
+
+    # Create Numba cache directory
+    mkdir -p /tmp/numba_cache
+    chmod 777 /tmp/numba_cache
+
+    # Install FSL
+    wget https://fsl.fmrib.ox.ac.uk/fsldownloads/fslconda/releases/getfsl.sh
+    sh getfsl.sh /usr/local/fsl
+
+
+%labels
+    Author Wes Harrell
+    Version v1.0
+    Description Neuroimaging container with FSL
