@@ -16,10 +16,8 @@ whatis([==[Description: AlphaFold can predict protein structures with atomic acc
 whatis([==[Homepage: https://github.com/deepmind/alphafold]==])
 whatis([==[URL: https://github.com/deepmind/alphafold]==])
 
--- Load required dependencies
-load("Apptainer/1.2.5")
 
-local version = "3.0.0"
+local version = "3.0.1"
 local alphafold_root = "/opt/nesi/containers/AlphaFold"  -- Modify this path to where your container is stored
 
 -- Define the Apptainer binary path
@@ -31,7 +29,7 @@ setenv("ALPHAFOLD_CONTAINER", pathJoin(alphafold_root, "alphafold3-3.0.1.aimg"))
 
 -- Create a shell function for run_alphafold.py that automatically uses apptainer exec
 set_shell_function("run_alphafold.py", 
-     string.format('%s exec --nv %s/alphafold3-3.0.1.aimg run_alphafold.py "$@"', 
+     string.format('%s exec --nv %s python3 /app/alphafold/run_alphafold.py "$@"', 
              apptainer, 
              alphafold_root
      ))
