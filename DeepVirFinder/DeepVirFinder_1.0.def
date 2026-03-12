@@ -1,0 +1,20 @@
+Bootstrap: docker
+From: condaforge/miniforge3:latest
+
+%post -c /bin/bash
+    # 1. Install System Dependencies
+    apt-get update -y
+    apt-get install -y build-essential git gfortran
+
+    # 2. Clone the repo
+    git clone https://github.com/jessieren/DeepVirFinder /DeepVirFinder
+    chmod -R 777 /DeepVirFinder
+
+    # 3. Create environment
+    conda create --name dvf python=3.6 numpy theano=1.0.3 keras=2.2.4 scikit-learn biopython h5py=2.10.0 mk>
+
+    # Clean up to reduce image size
+    conda clean -a -y
+
+%runscript
+    exec conda run -n dvf --no-capture-output python -u /DeepVirFinder/"$@"
