@@ -1,0 +1,24 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+%environment
+    export DEBIAN_FRONTEND="noninteractive"
+    export LANG=en_NZ.utf8
+
+
+%post
+    # Update and install system dependencies
+    apt-get update 
+    DEBIAN_FRONTEND=noninteractive apt-get install -y nedit
+
+    # Clean up apt cache
+    rm -rf /var/lib/apt/lists/*
+
+%runscript
+    nedit $@
+
+
+%labels
+    Author Wes Harrell
+    Version v1.0
+    Description Nedit, for some reason
