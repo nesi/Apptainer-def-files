@@ -1,0 +1,311 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+# =============================================================================
+# Apptainer image: GROMACS + CP2K QM/MM, multi-node ready (hybrid MPI model)
+# -----------------------------------------------------------------------------
+# Builds, inside the image:
+#   - UCX (with InfiniBand verbs) and OpenMPI 5.0.10 from source
+#   - CP2K (cp2k.psmp + libcp2k) via the CP2K toolchain, against that OpenMPI
+#   - GROMACS, double precision + MPI, with the CP2K QM/MM interface enabled
+#     -> launcher is named  gmx_mpi_d
+#
+# Why "hybrid" (build MPI in the container) rather than "bind" (inject host MPI):
+#   OpenMPI is NOT ABI-stable across versions, and its libmpi soname
+#   (libmpi.so.40) is shared by 4.x and 5.x even though the ABI differs - so a
+#   bind of a mismatched host OpenMPI breaks subtly. The container therefore
+#   needs OpenMPI 5.0.x regardless, and building it here also avoids dragging a
+#   GCC-15 / newer-glibc host MPI stack into this older userspace.
+#
+# Interop rule: MPI/PMIx compatibility is defined by the OpenMPI *version*, not
+#   the compiler. This image uses GCC 11 (avoids GROMACS "GCC 12+ known issues")
+#   and still interoperates with your GCC-15-built host mpirun, as long as the
+#   container OpenMPI == the host OpenMPI series (5.0.x). UCX is independent: all
+#   ranks run this same image, so they all use this image's UCX over IB.
+#
+# Read %help before building AND before running. Build is long (CP2K toolchain
+# + CP2K + GROMACS, plus UCX/OpenMPI); give it plenty of RAM.
+#   apptainer build gromacs-cp2k.sif gromacs-cp2k-qmmm-openmpi.def
+# =============================================================================
+
+%labels
+    Maintainer   you@example.org
+    Description  GROMACS (double, MPI) + CP2K QM/MM, OpenMPI 5.0.10 + UCX/IB
+    GROMACS      2025.2
+    CP2K         2025.2
+    OpenMPI      5.0.10
+    UCX          1.17.0
+    BaseOS       Ubuntu 22.04 (GCC 11)
+
+%post
+    # Apptainer runs %post with /bin/sh (dash on Ubuntu), but the CP2K toolchain's
+    # generated 'setup' file uses the bash-only 'source' builtin. Re-exec the whole
+    # script under bash so that sourcing 'setup' below works.
+    if [ -z "${BASH_VERSION:-}" ]; then exec bash "$0" "$@"; fi
+
+    set -e
+
+    # -------------------------------------------------------------------------
+    # Versions / parallelism. EDIT THESE.
+    #   OPENMPI_VERSION MUST match your cluster's OpenMPI *series* (major.minor).
+    #   Check on the cluster:  module load OpenMPI/5.0.10-GCC-15.2.0 ; ompi_info --version
+    #   If yours is a different 5.0.x patch, set it here; if it is 4.1.x instead,
+    #   set that (the configure flags below still work, minus PRRTE specifics).
+    #   UCX_VERSION is independent of the host; any recent UCX that supports your
+    #   HCA is fine.
+    #   NPROC: lower this (e.g. 4) if the build is OOM-killed - libint and CP2K
+    #   are memory-hungry (~2 GB/core).
+    # -------------------------------------------------------------------------
+    GROMACS_VERSION=2025.2
+    CP2K_VERSION=2025.2
+    OPENMPI_VERSION=5.0.10
+    UCX_VERSION=1.17.0
+    NPROC=$(nproc)
+
+    OMPI_SERIES=$(echo "$OPENMPI_VERSION" | cut -d. -f1,2)
+    export DEBIAN_FRONTEND=noninteractive
+
+    # -------------------------------------------------------------------------
+    # 1. Build dependencies. GCC 11 is the Ubuntu 22.04 default (deliberate).
+    #    rdma-core dev libs + libnuma are needed so UCX can build InfiniBand
+    #    (verbs/rdmacm) support and talk to the host HCA at run time.
+    #    NOTE: no apt OpenMPI - we build our own below.
+    # -------------------------------------------------------------------------
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        build-essential gfortran \
+        python3 python3-pip python3-dev \
+        git wget ca-certificates \
+        make m4 autoconf automake libtool pkg-config \
+        unzip bzip2 xxd patch \
+        libnuma-dev libibverbs-dev librdmacm-dev ibverbs-providers
+    rm -rf /var/lib/apt/lists/*
+
+    # CMake: pin to the 3.x series. >=3.28 satisfies GROMACS 2026; <4 is REQUIRED
+    # because CMake 4 removed support for cmake_minimum_required(VERSION <3.5),
+    # which breaks several CP2K toolchain deps (libxc 7.0.0, COSMA, DBCSR, ...).
+    # Without the upper bound, pip pulls CMake 4.x and the libxc build fails.
+    pip3 install --no-cache-dir "cmake>=3.28,<4"
+
+    cd /opt
+
+    # -------------------------------------------------------------------------
+    # 2. UCX (InfiniBand transport for OpenMPI 5; OMPI 5 dropped the openib BTL).
+    # -------------------------------------------------------------------------
+    wget --retry-connrefused --waitretry=5 -t 5 \
+        -O ucx.tar.gz \
+        "https://github.com/openucx/ucx/releases/download/v${UCX_VERSION}/ucx-${UCX_VERSION}.tar.gz"
+    tar -xzf ucx.tar.gz
+    cd "ucx-${UCX_VERSION}"
+    ./configure --prefix=/opt/ucx \
+        --enable-optimizations \
+        --disable-logging --disable-debug \
+        --disable-assertions --disable-params-check \
+        --without-cuda --without-rocm \
+        --with-verbs --with-rdmacm
+    make -j ${NPROC}
+    make install
+    cd /opt
+    rm -rf ucx.tar.gz "ucx-${UCX_VERSION}"
+
+    # -------------------------------------------------------------------------
+    # 3. OpenMPI (matched to the host series). Uses internal PMIx/PRRTE/hwloc/
+    #    libevent (a self-consistent stack); links UCX for IB. Fortran is ON
+    #    because CP2K needs the MPI Fortran bindings.
+    # -------------------------------------------------------------------------
+    wget --retry-connrefused --waitretry=5 -t 5 \
+        -O openmpi.tar.bz2 \
+        "https://download.open-mpi.org/release/open-mpi/v${OMPI_SERIES}/openmpi-${OPENMPI_VERSION}.tar.bz2"
+    tar -xjf openmpi.tar.bz2
+    cd "openmpi-${OPENMPI_VERSION}"
+    ./configure --prefix=/opt/openmpi \
+        --with-ucx=/opt/ucx \
+        --with-pmix=internal --with-prrte=internal \
+        --with-hwloc=internal --with-libevent=internal \
+        --enable-mpi-fortran=all \
+        --without-cuda --without-rocm
+    make -j ${NPROC}
+    make install
+    cd /opt
+    rm -rf openmpi.tar.bz2 "openmpi-${OPENMPI_VERSION}"
+
+    # Make our MPI/UCX the ones used for the rest of the build.
+    export PATH="/opt/openmpi/bin:$PATH"
+    export LD_LIBRARY_PATH="/opt/openmpi/lib:/opt/ucx/lib:${LD_LIBRARY_PATH:-}"
+
+    # -------------------------------------------------------------------------
+    # 4. CP2K via the toolchain, built against the OpenMPI above
+    #    (--with-openmpi=system finds it on PATH). Exclusions match the
+    #    GROMACS/BioExcel recommendation.
+    # -------------------------------------------------------------------------
+    wget --retry-connrefused --waitretry=5 -t 5 \
+        -O cp2k.tar.bz2 \
+        "https://github.com/cp2k/cp2k/releases/download/v${CP2K_VERSION}/cp2k-${CP2K_VERSION}.tar.bz2"
+    tar -xjf cp2k.tar.bz2
+    mv "cp2k-${CP2K_VERSION}" cp2k
+    rm -f cp2k.tar.bz2
+
+    cd /opt/cp2k/tools/toolchain
+    ./install_cp2k_toolchain.sh -j ${NPROC} \
+        --mpi-mode=openmpi   --with-openmpi=system \
+        --with-gcc=system    --with-cmake=system \
+        --math-mode=openblas \
+        --with-hdf5=no --with-sirius=no --with-libvori=no \
+        --with-gsl=no  --with-spfft=no  --with-spglib=no
+
+    cp -f /opt/cp2k/tools/toolchain/install/arch/* /opt/cp2k/arch/
+    . /opt/cp2k/tools/toolchain/install/setup
+
+    cd /opt/cp2k
+    make -j ${NPROC} ARCH=local VERSION=psmp
+    make -j ${NPROC} ARCH=local VERSION=psmp libcp2k
+    # libcp2k.a -> /opt/cp2k/lib/local/psmp/ ; cp2k.psmp -> /opt/cp2k/exe/local/
+
+    # -------------------------------------------------------------------------
+    # 5. GROMACS with the CP2K QM/MM interface. Static build; FFT/BLAS/LAPACK
+    #    taken from the SAME toolchain libraries CP2K used (resolved by glob,
+    #    since their dir names carry version numbers). GMX_MPI=ON picks up the
+    #    OpenMPI on PATH.
+    # -------------------------------------------------------------------------
+    cd /opt
+    wget --retry-connrefused --waitretry=5 -t 5 \
+        -O gromacs.tar.gz \
+        "https://ftp.gromacs.org/gromacs/gromacs-${GROMACS_VERSION}.tar.gz"
+    tar -xzf gromacs.tar.gz
+    rm -f gromacs.tar.gz
+
+    TC=/opt/cp2k/tools/toolchain/install
+    # The CP2K toolchain builds FFTW and OpenBLAS as STATIC libraries (no .so),
+    # and only double-precision FFTW (no libfftw3f). Resolve the actual library
+    # files, preferring .a, and fail loudly if they are not where we expect.
+    FFTW_LIB=$(ls ${TC}/fftw-*/lib/libfftw3.a ${TC}/fftw-*/lib/libfftw3.so 2>/dev/null | head -n1)
+    FFTW_INC=$(ls -d ${TC}/fftw-*/include 2>/dev/null | head -n1)
+    OPENBLAS_LIB=$(ls ${TC}/openblas-*/lib/libopenblas.a ${TC}/openblas-*/lib/libopenblas.so 2>/dev/null | head -n1)
+    if [ -z "$FFTW_LIB" ] || [ -z "$OPENBLAS_LIB" ] || [ -z "$FFTW_INC" ]; then
+        echo "ERROR: could not locate toolchain FFTW/OpenBLAS:"
+        echo "  FFTW_LIB='$FFTW_LIB'  FFTW_INC='$FFTW_INC'  OPENBLAS_LIB='$OPENBLAS_LIB'"
+        ls -la ${TC}/fftw-*/lib ${TC}/openblas-*/lib 2>/dev/null
+        exit 1
+    fi
+
+    cd "/opt/gromacs-${GROMACS_VERSION}"
+    mkdir build
+    cd build
+    # Point GROMACS at the SAME static FFTW and OpenBLAS that CP2K used. This is
+    # the GROMACS-recommended "matching libraries" setup: libcp2k.pc (found via
+    # pkg-config) references these exact toolchain libs, so GROMACS and CP2K
+    # resolve to ONE FFTW and ONE BLAS, avoiding duplicate-symbol clashes.
+    # Notes:
+    #  - .a archives are used (the toolchain builds no .so for these).
+    #  - No ";m": GROMACS's FindFFTW adds libm to its own link test already.
+    #  - No FFTWF_*: single-precision FFTW isn't built, and a double-precision
+    #    GROMACS (GMX_DOUBLE=ON) never looks for it.
+    #  - gfortran and the MPI Fortran lib are appended automatically by GROMACS's
+    #    CP2K cmake module, so the static OpenBLAS/CP2K Fortran symbols resolve.
+    cmake .. \
+        -DCMAKE_INSTALL_PREFIX=/opt/gromacs \
+        -DGMX_MPI=ON \
+        -DGMX_DOUBLE=ON \
+        -DGMX_CP2K=ON \
+        -DCP2K_DIR=/opt/cp2k/lib/local/psmp \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DGMXAPI=OFF \
+        -DGMX_INSTALL_NBLIB_API=OFF \
+        -DGMX_FFT_LIBRARY=fftw3 \
+        -DFFTW_LIBRARY=${FFTW_LIB} \
+        -DFFTW_INCLUDE_DIR=${FFTW_INC} \
+        -DGMX_BLAS_USER=${OPENBLAS_LIB} \
+        -DGMX_LAPACK_USER=${OPENBLAS_LIB}
+    # If you ever drop to CP2K < 9.1 and hit unresolved-symbol link errors, add:
+    #   -DCP2K_LINKER_FLAGS="<concatenated LDFLAGS + LIBS from /opt/cp2k/arch/local.psmp>"
+    make -j ${NPROC}
+    make install
+
+    # -------------------------------------------------------------------------
+    # 6. Cleanup. Keep /opt/{ucx,openmpi,cp2k,gromacs}; drop GROMACS sources.
+    # -------------------------------------------------------------------------
+    rm -rf "/opt/gromacs-${GROMACS_VERSION}"
+
+%environment
+    export LC_ALL=C
+    # %environment is evaluated by /bin/sh (dash), which lacks the bash 'source'
+    # builtin used inside the CP2K toolchain 'setup' and GROMACS 'GMXRC'. So we
+    # set the environment manually here instead of sourcing them.
+    export PATH="/opt/openmpi/bin:/opt/gromacs/bin:/opt/cp2k/exe/local:$PATH"
+    # OpenMPI, UCX, GROMACS, then every CP2K toolchain dependency lib dir
+    # (libint, libxc, OpenBLAS, FFTW, ScaLAPACK, ELPA, COSMA, ...).
+    LDP="/opt/openmpi/lib:/opt/ucx/lib:/opt/gromacs/lib:/opt/gromacs/lib64"
+    for d in /opt/cp2k/tools/toolchain/install/*/lib /opt/cp2k/tools/toolchain/install/*/lib64; do
+        if [ -d "$d" ]; then LDP="$LDP:$d"; fi
+    done
+    export LD_LIBRARY_PATH="$LDP:${LD_LIBRARY_PATH:-}"
+    # Let OpenMPI/UCX auto-select IB. To force it (debugging slow TCP fallback):
+    #   export OMPI_MCA_pml=ucx
+    #   export UCX_TLS=rc,sm,self        # adjust to your fabric
+
+%runscript
+    exec "$@"
+
+%test
+    export PATH="/opt/openmpi/bin:/opt/gromacs/bin:/opt/cp2k/exe/local:$PATH"
+    LDP="/opt/openmpi/lib:/opt/ucx/lib:/opt/gromacs/lib:/opt/gromacs/lib64"
+    for d in /opt/cp2k/tools/toolchain/install/*/lib /opt/cp2k/tools/toolchain/install/*/lib64; do
+        if [ -d "$d" ]; then LDP="$LDP:$d"; fi
+    done
+    export LD_LIBRARY_PATH="$LDP:${LD_LIBRARY_PATH:-}"
+    echo "==> OpenMPI:" ; mpirun --version | head -n1
+    echo "==> UCX:"     ; /opt/ucx/bin/ucx_info -v | head -n1
+    echo "==> GROMACS:" ; gmx_mpi_d --version | head -n20
+    echo "==> CP2K:"    ; cp2k.psmp --version
+
+%help
+    GROMACS (double precision, MPI) with the CP2K QM/MM interface, plus a
+    standalone CP2K (cp2k.psmp). MPI = OpenMPI 5.0.10 + UCX, compiled in.
+    The GROMACS launcher is gmx_mpi_d.
+
+    BUILD
+      apptainer build gromacs-cp2k.sif gromacs-cp2k-qmmm-openmpi.def
+      (add sudo or --fakeroot per your site). Long build; give it RAM, and
+      lower NPROC in %post if it is OOM-killed.
+
+    RUN MULTI-NODE (Slurm + host mpirun, the "hybrid" model)
+      Inside an allocation, let the HOST OpenMPI launch one container per rank:
+
+        #!/bin/bash
+        #SBATCH -N 2 --ntasks-per-node=... --time=...
+        module load OpenMPI/5.0.10-GCC-15.2.0      # host launcher == container OMPI series
+        mpirun -np $SLURM_NTASKS \
+            apptainer exec gromacs-cp2k.sif \
+            gmx_mpi_d mdrun -deffnm qmmm -ntomp $SLURM_CPUS_PER_TASK
+
+      The host PRRTE starts the ranks; each container's OpenMPI 5.0.x connects
+      back over PMIx and then talks rank-to-rank over InfiniBand via UCX.
+
+    RUN SINGLE NODE
+      apptainer exec gromacs-cp2k.sif mpirun -np 4 gmx_mpi_d mdrun -deffnm qmmm
+      apptainer exec gromacs-cp2k.sif cp2k.psmp -i in.inp -o out.out
+
+    CLUSTER-SIDE REQUIREMENTS (for the multi-node case)
+      - Host mpirun MUST be OpenMPI 5.0.x (same series as OPENMPI_VERSION).
+      - Do NOT pass --cleanenv: PMIx/PRRTE wire-up relies on inherited PMIX_*/
+        OMPI_* env vars being visible inside the container.
+      - The PMIx session dir must be visible in the container. It normally lives
+        under /tmp (Apptainer binds /tmp by default). If your site sets a
+        node-local $TMPDIR, add:  --bind "$TMPDIR"
+      - InfiniBand: Apptainer binds /dev by default, so /dev/infiniband is
+        visible and the container's rdma-core talks to the host kernel. If a
+        specific HCA provider is missing from the image, bind ONLY the host's
+        verbs providers, e.g.  --bind /usr/lib/x86_64-linux-gnu/libibverbs
+        (a small, low-risk bind - not the whole MPI stack).
+
+    NOTES / FALLBACKS
+      - Compiler need NOT match the host; only the OpenMPI version does. The
+        image uses GCC 11 on purpose.
+      - If PMIx wire-up fails (rare), it usually means the host uses an external
+        PMIx whose version is incompatible with OpenMPI 5.0.10's internal one.
+        Fix: check `pmix_info --version` on the cluster and rebuild the
+        container OpenMPI with --with-pmix=<that version, built from source>
+        and --with-prrte=external to match.
+      - GPU note: this is CPU-only (the right setup for double-precision QM/MM).
+
+
