@@ -1,0 +1,30 @@
+Bootstrap: docker
+From: condaforge/miniforge3:latest
+
+%post -c /bin/bash
+
+    # Make sure that fortran is installed
+    apt-get update -y
+    apt-get upgrade -y
+    apt-get install -y libgfortran-12-dev
+    apt-get install -y libgfortran5
+    apt-get install -y gfortran
+
+    # clone the repo
+    git clone https://github.com/martinpacesa/BindCraft BindCraft
+    chmod -R 777 BindCraft
+    cd BindCraft
+
+    # install
+    ./install_bindcraft.sh --cuda '12.6.3' --pkg_manager 'conda'
+
+    # use it
+    conda activate BindCraft
+    # I went through all the things missing and did pip installs, may need --user as well.
+    pip install pyrosetta-installer
+    python -c "import pyrosetta_installer; pyrosetta_installer.install_pyrosetta()"
+    pip install numpy pandas matplotlib "jax[cuda12]" Bio colabdesign
+
+%runscript
+    # Run the python script in a conda environment.
+    conda run -n BindCraft --no-capture-output python -u /BindCraft/bindcraft.py "$@"
