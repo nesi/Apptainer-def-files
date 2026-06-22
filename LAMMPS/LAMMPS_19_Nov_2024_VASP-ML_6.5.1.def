@@ -1,0 +1,365 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+%labels
+  Author Geoffrey Weal
+  Description "VASP 6.5.1: build standalone VASPml from vasp.6.5.1.tgz, then build vasp-dev/lammps (vasp-mlff) with selected packages; fixes lib-linalg and lib-colvars prep; uses GCC-12.3 + OpenMPI-4.1.5 inside container"
+  VASP_Compatibility "6.5.x (incl 6.5.1)"
+  Version "2026-05-09"
+
+%help
+  (1) Build OpenMPI 4.1.5 from source with GCC 12.3.x inside container.
+  (2) Build VASPml standalone from the VASP 6.5.1 tarball.
+  (3) Build LAMMPS from vasp-dev/lammps branch vasp-mlff and link to VASPml.
+  (4) Enable a selected set of LAMMPS packages (COLVARS prebuilt; lib-linalg prebuilt).
+  (5) Eigen include path fixed for packages needing <Eigen/Eigen>.
+  (6) %test validates that /opt/lammps/bin/lmp -h works.
+
+%files
+  vasp.6.5.1.tgz /opt/vasp.6.5.1.tgz
+
+%environment
+  # Prefer the in-container toolchain
+  export MPI_HOME="/opt/openmpi"
+  export PATH="/opt/openmpi/bin:/opt/lammps/bin:${PATH}"
+  export LD_LIBRARY_PATH="/opt/openmpi/lib:/opt/lammps/lib:/opt/lammps/lib64:${LD_LIBRARY_PATH}"
+
+  export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+  export CUDA_ROOT="${CUDA_ROOT:-/usr/local/cuda}"
+
+%post -c /bin/bash
+  set -euo pipefail
+  set -x
+  export DEBIAN_FRONTEND=noninteractive
+
+  # ------------------------------------------------------------
+  # 0) Build dependencies (NO distro OpenMPI; we build our own)
+  # ------------------------------------------------------------
+  apt-get update
+  apt-get install -y --no-install-recommends \
+    ca-certificates \
+    wget \
+    git \
+    make \
+    pkg-config \
+    file \
+    rsync \
+    python3 \
+    python3-dev \
+    gfortran-12 \
+    gcc-12 \
+    g++-12 \
+    libopenblas-dev \
+    liblapack-dev \
+    liblapacke-dev \
+    libboost-test-dev \
+    zlib1g-dev \
+    libhdf5-dev \
+    libnetcdf-dev \
+    libvtk9-dev \
+    libeigen3-dev \
+    perl \
+    tar \
+    xz-utils
+  rm -rf /var/lib/apt/lists/*
+
+  # Make GCC-12 the active compiler for builds
+  export CC=gcc-12
+  export CXX=g++-12
+  export FC=gfortran-12
+
+  # ------------------------------------------------------------
+  # 0.1) Build OpenMPI 4.1.5 from source with GCC-12
+  # ------------------------------------------------------------
+  OPENMPI_VER="4.1.5"
+  OPENMPI_PREFIX="/opt/openmpi"
+
+  mkdir -p /opt/src
+  cd /opt/src
+  wget -q "https://download.open-mpi.org/release/open-mpi/v4.1/openmpi-${OPENMPI_VER}.tar.gz"
+  tar -xzf "openmpi-${OPENMPI_VER}.tar.gz"
+  cd "openmpi-${OPENMPI_VER}"
+
+  ./configure \
+    --prefix="${OPENMPI_PREFIX}" \
+    CC="${CC}" \
+    CXX="${CXX}" \
+    FC="${FC}"
+
+  make -j"$(nproc)"
+  make install
+
+  # Ensure our MPI wrappers are first
+  export PATH="${OPENMPI_PREFIX}/bin:${PATH}"
+  export LD_LIBRARY_PATH="${OPENMPI_PREFIX}/lib:${LD_LIBRARY_PATH}"
+
+  # Sanity checks
+  command -v mpicc
+  mpicc --version || true
+  mpirun --version || true
+
+  # ------------------------------------------------------------
+  # Locate Eigen include dir (Ubuntu/Debian uses /usr/include/eigen3)
+  # ------------------------------------------------------------
+  if [ -d /usr/include/eigen3/Eigen ]; then
+    EIGEN_INC="/usr/include/eigen3"
+  elif [ -d /usr/include/Eigen ]; then
+    EIGEN_INC="/usr/include"
+  else
+    echo "ERROR: Eigen headers not found (expected /usr/include/eigen3/Eigen or /usr/include/Eigen)" >&2
+    exit 1
+  fi
+  echo "Using Eigen include dir: ${EIGEN_INC}"
+
+  # ------------------------------------------------------------
+  # 1) Unpack VASP source tarball and locate src/vaspml
+  # ------------------------------------------------------------
+  test -f /opt/vasp.6.5.1.tgz
+  mkdir -p /opt/vasp-src
+  tar -xzf /opt/vasp.6.5.1.tgz -C /opt/vasp-src
+
+  VASPML_DIR_IN_TAR="$(find /opt/vasp-src -type d -path '*/src/vaspml' -print -quit || true)"
+  test -n "${VASPML_DIR_IN_TAR}"
+  VASP_TOPDIR="${VASPML_DIR_IN_TAR%/src/vaspml}"
+  test -d "${VASP_TOPDIR}/src/vaspml"
+
+  # ------------------------------------------------------------
+  # 2) Build VASPml standalone (uses our OpenMPI mpic++)
+  # ------------------------------------------------------------
+  cp -r "${VASP_TOPDIR}/src/vaspml" /opt/vaspml-src
+  cd /opt/vaspml-src
+
+  command -v rsync
+  rsync --version > /tmp/rsync_version.txt
+  head -n 1 /tmp/rsync_version.txt
+
+  BOOST_INC_DIR="/usr/include"
+  if [ -d /usr/lib/x86_64-linux-gnu ]; then
+    BOOST_LIB_DIR="/usr/lib/x86_64-linux-gnu"
+  elif [ -d /usr/lib64 ]; then
+    BOOST_LIB_DIR="/usr/lib64"
+  else
+    BOOST_LIB_DIR="/usr/lib"
+  fi
+
+  cat > makefile.include << EOF
+CXX = mpic++
+CPP_DEP = \$(CXX)
+LD = \$(CXX)
+
+AR = ar
+ARFLAGS = rcs
+
+CXXFLAGS = -O3 -std=c++17 -fPIC -Wall -Wextra -pedantic-errors
+CPP_OPTIONS = -DVASPML_USE_CBLAS
+
+INCLUDE =
+LDFLAGS =
+
+BOOST_INCLUDE = -I${BOOST_INC_DIR}
+BOOST_LIB = -L${BOOST_LIB_DIR} -lboost_unit_test_framework
+
+CPP_GPU = -DCUDA_GPU -DRPROMU_CPROJ_OVERLAP -DCUFFT_MIN=28 -UscaLAPACK
+NVCC := nvcc
+CUDA_LIB := -L\$(CUDA_ROOT)/lib64 -lnvToolsExt -lcudart -lcuda -lcufft -lcublas
+GENCODE_ARCH := -gencode=arch="compute_80,compute_90",code="sm_80,compute_80,sm_90,compute_90"
+EOF
+
+  OPENBLAS_CFLAGS="$(pkg-config --cflags openblas 2>/dev/null || true)"
+  OPENBLAS_LIBS="$(pkg-config --libs openblas 2>/dev/null || echo -lopenblas)"
+  LAPACKE_CFLAGS="$(pkg-config --cflags lapacke 2>/dev/null || true)"
+  LAPACKE_LIBS="$(pkg-config --libs lapacke 2>/dev/null || echo -llapacke -llapack)"
+  {
+    echo ""
+    echo "INCLUDE += ${OPENBLAS_CFLAGS} ${LAPACKE_CFLAGS}"
+    echo "LDFLAGS += ${OPENBLAS_LIBS} ${LAPACKE_LIBS}"
+  } >> makefile.include
+
+  make -j"$(nproc)" libvaspml
+  test -f lib/libvaspml.a
+
+  mkdir -p /opt/vaspml/lib /opt/vaspml/include
+  cp -a lib/libvaspml.a /opt/vaspml/lib/
+
+  IFACE_HDR="$(find /opt/vaspml-src -name 'InterfaceLAMMPS.hpp' -print -quit || true)"
+  if [ -n "${IFACE_HDR}" ]; then
+    cp -a "${IFACE_HDR}" /opt/vaspml/include/
+  fi
+
+  # ------------------------------------------------------------
+  # 3) Build LAMMPS with VASPml patch (literal wiki steps)
+  # ------------------------------------------------------------
+  mkdir -p /opt/src
+  cd /opt/src
+  git clone https://github.com/vasp-dev/lammps
+  cd lammps
+  git checkout vasp-mlff
+
+  git submodule sync --recursive
+  git submodule update --init --recursive
+
+  mkdir -p lib/vasp
+  ln -s /opt/vaspml lib/vasp/
+
+  # ------------------------------------------------------------
+  # 4) Enable selected LAMMPS packages
+  # ------------------------------------------------------------
+  cd src
+  make ps || true
+
+  enable_pkg() {
+    pkg="$1"
+    name="$(printf "%s" "$pkg" | tr '[:upper:]' '[:lower:]')"
+    echo "=== Enabling LAMMPS package: ${pkg} -> make yes-${name} ==="
+    make "yes-${name}"
+  }
+
+  enable_colvars() {
+    echo "=== Preparing COLVARS library (make lib-colvars args=\"-m mpi\") then enabling COLVARS ==="
+    make -j"$(nproc)" lib-colvars args="-m mpi" || make lib-colvars args="-m mpi"
+    test -f ../lib/colvars/Makefile.lammps || test -f ../../lib/colvars/Makefile.lammps
+    enable_pkg "COLVARS"
+  }
+
+  pkgs="
+AMOEBA
+ASPHERE
+BOCS
+BODY
+BPM
+BROWNIAN
+CG-DNA
+CG-SPICA
+CLASS2
+COLLOID
+COLVARS
+COMPRESS
+CORESHELL
+DIELECTRIC
+DIFFRACTION
+DIPOLE
+DPD-BASIC
+DPD-MESO
+DPD-REACT
+DPD-SMOOTH
+DRUDE
+EFF
+EXTRA-COMPUTE
+EXTRA-DUMP
+EXTRA-FIX
+EXTRA-MOLECULE
+EXTRA-PAIR
+FEP
+GRANULAR
+INTERLAYER
+KSPACE
+LATBOLTZ
+LEPTON
+MACHDYN
+MANIFOLD
+MANYBODY
+MC
+MEAM
+MISC
+ML-IAP
+ML-RANN
+ML-SNAP
+ML-VASP
+MOFFF
+MOLECULE
+MOLFILE
+NETCDF
+OPT
+ORIENT
+PERI
+PHONON
+PLUGIN
+PTM
+PYTHON
+QEQ
+QTB
+REACTION
+REAXFF
+REPLICA
+RHEO
+RIGID
+SHOCK
+SMTBQ
+SPH
+SPIN
+SRD
+TALLY
+UEF
+YAFF
+"
+
+  for p in $pkgs; do
+    if [ "$p" = "COLVARS" ]; then
+      enable_colvars
+    else
+      enable_pkg "$p"
+    fi
+  done
+
+  make ps || true
+
+  # ------------------------------------------------------------
+  # 4.1) Always build lib/linalg so -llinalg links
+  # ------------------------------------------------------------
+  make -j"$(nproc)" lib-linalg args="-m mpi" || make lib-linalg args="-m mpi"
+  test -f ../lib/linalg/liblinalg.a
+
+  # ------------------------------------------------------------
+  # 5) Build LAMMPS (make mpi) and link VASPml + BLAS/LAPACKe
+  # ------------------------------------------------------------
+  MAKEFILE_MPI="MAKE/Makefile.mpi"
+
+  # Use our OpenMPI wrappers (on PATH)
+  sed -i 's|^CC *=.*|CC = mpic++|g' "${MAKEFILE_MPI}"
+  sed -i 's|^LINK *=.*|LINK = mpic++|g' "${MAKEFILE_MPI}"
+
+  if grep -q '^CCFLAGS' "${MAKEFILE_MPI}"; then
+    sed -i "s|^CCFLAGS *=.*|CCFLAGS = -O3 -g -std=c++17 -I../lib/vasp/vaspml/include -I${EIGEN_INC}|g" "${MAKEFILE_MPI}"
+  else
+    echo "CCFLAGS = -O3 -g -std=c++17 -I../lib/vasp/vaspml/include -I${EIGEN_INC}" >> "${MAKEFILE_MPI}"
+  fi
+
+  if grep -q '^LINKFLAGS' "${MAKEFILE_MPI}"; then
+    sed -i 's|^LINKFLAGS *=.*|LINKFLAGS = -O3 -g -std=c++17|g' "${MAKEFILE_MPI}"
+  else
+    echo 'LINKFLAGS = -O3 -g -std=c++17' >> "${MAKEFILE_MPI}"
+  fi
+
+  if grep -q '^LIB' "${MAKEFILE_MPI}"; then
+    sed -i 's|^LIB *=.*|LIB = -L../lib/vasp/vaspml/lib -lvaspml -lopenblas -llapacke -llapack|g' "${MAKEFILE_MPI}"
+  else
+    echo 'LIB = -L../lib/vasp/vaspml/lib -lvaspml -lopenblas -llapacke -llapack' >> "${MAKEFILE_MPI}"
+  fi
+
+  make -j"$(nproc)" mpi
+
+  mkdir -p /opt/lammps/bin
+  cp -a lmp_mpi /opt/lammps/bin/lmp
+
+%test
+  set -eu
+  set -x
+
+  # Toolchain sanity
+  gcc-12 -dumpfullversion -dumpversion
+  /opt/openmpi/bin/mpirun --version | head -n 3
+
+  # Build artifacts
+  test -f /opt/vaspml/lib/libvaspml.a
+  test -x /opt/lammps/bin/lmp
+
+  # Required test: lmp -h must work
+  /opt/lammps/bin/lmp -h > /tmp/lmp_help.txt
+
+  # Ensure output is real help text (not empty / not a crash)
+  grep -q "Large-scale Atomic/Molecular Massively Parallel Simulator" /tmp/lmp_help.txt
+
+  # Optional: check ML-VASP hooks are present
+  grep -Ei "vasp|ML-VASP" /tmp/lmp_help.txt >/dev/null
+
+  echo "OK: lmp -h works; GCC-12.3.x + OpenMPI-4.1.5 installed; VASPml built; LAMMPS built and runs."
