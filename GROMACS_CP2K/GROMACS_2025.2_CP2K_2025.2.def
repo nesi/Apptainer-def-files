@@ -53,6 +53,11 @@ From: ubuntu:22.04
     #   set that (the configure flags below still work, minus PRRTE specifics).
     #   UCX_VERSION is independent of the host; any recent UCX that supports your
     #   HCA is fine.
+    #   GMX_SIMD pins the CPU instruction set GROMACS is compiled for. Do NOT
+    #   leave GROMACS to auto-detect: it would target the (possibly wider) BUILD
+    #   node and then crash with SIGILL on narrower run nodes. AVX2_256 runs on
+    #   AMD Zen2/Zen3 (e.g. NeSI Milan) and Intel Haswell+. Use AVX_512 only if
+    #   ALL your run nodes have AVX-512. Build on the same node type you run on.
     #   NPROC: lower this (e.g. 4) if the build is OOM-killed - libint and CP2K
     #   are memory-hungry (~2 GB/core).
     # -------------------------------------------------------------------------
@@ -60,6 +65,7 @@ From: ubuntu:22.04
     CP2K_VERSION=2025.2
     OPENMPI_VERSION=5.0.10
     UCX_VERSION=1.17.0
+    GMX_SIMD=AVX2_256
     NPROC=$(nproc)
 
     OMPI_SERIES=$(echo "$OPENMPI_VERSION" | cut -d. -f1,2)
@@ -206,6 +212,7 @@ From: ubuntu:22.04
         -DCMAKE_INSTALL_PREFIX=/opt/gromacs \
         -DGMX_MPI=ON \
         -DGMX_DOUBLE=ON \
+        -DGMX_SIMD=${GMX_SIMD} \
         -DGMX_CP2K=ON \
         -DCP2K_DIR=/opt/cp2k/lib/local/psmp \
         -DBUILD_SHARED_LIBS=OFF \
@@ -220,6 +227,13 @@ From: ubuntu:22.04
     #   -DCP2K_LINKER_FLAGS="<concatenated LDFLAGS + LIBS from /opt/cp2k/arch/local.psmp>"
     make -j ${NPROC}
     make install
+
+    # `gmx` and `gmx_mpi` are both the same MPI/double/CP2K binary (gmx_mpi_d).
+    # Both can do QM/MM; node span is chosen by the launcher (srun/mpirun), not by
+    # the name. This lets `apptainer exec $SIF gmx ...` work too, including under
+    # srun/mpirun -- not just the host wrapper functions.
+    ln -sf gmx_mpi_d /opt/gromacs/bin/gmx
+    ln -sf gmx_mpi_d /opt/gromacs/bin/gmx_mpi
 
     # -------------------------------------------------------------------------
     # 6. Cleanup. Keep /opt/{ucx,openmpi,cp2k,gromacs}; drop GROMACS sources.
@@ -255,38 +269,49 @@ From: ubuntu:22.04
     export LD_LIBRARY_PATH="$LDP:${LD_LIBRARY_PATH:-}"
     echo "==> OpenMPI:" ; mpirun --version | head -n1
     echo "==> UCX:"     ; /opt/ucx/bin/ucx_info -v | head -n1
-    echo "==> GROMACS:" ; gmx_mpi_d --version | head -n20
+    echo "==> GROMACS (gmx = gmx_mpi = gmx_mpi_d):" ; gmx_mpi --version | head -n12
     echo "==> CP2K:"    ; cp2k.psmp --version
 
 %help
-    GROMACS (double precision, MPI) with the CP2K QM/MM interface, plus a
-    standalone CP2K (cp2k.psmp). MPI = OpenMPI 5.0.10 + UCX, compiled in.
-    The GROMACS launcher is gmx_mpi_d.
+    GROMACS + CP2K QM/MM in one Apptainer image. MPI = OpenMPI 5.0.10 + UCX.
+    GROMACS is a double-precision, MPI, CP2K-enabled build. The launcher is
+    available under three names -- gmx, gmx_mpi, gmx_mpi_d -- all the SAME binary.
+    All can do QM/MM; single- vs multi-node is chosen purely by how you launch
+    (srun/mpirun + node/rank count), not by which name you use.
+    Standalone CP2K is also available as cp2k.psmp.
 
     BUILD
-      apptainer build gromacs-cp2k.sif gromacs-cp2k-qmmm-openmpi.def
+      apptainer build gromacs-cp2k.sif CP2K_2025_2_GROMACS_2025_2.def
       (add sudo or --fakeroot per your site). Long build; give it RAM, and
       lower NPROC in %post if it is OOM-killed.
 
-    RUN MULTI-NODE (Slurm + host mpirun, the "hybrid" model)
-      Inside an allocation, let the HOST OpenMPI launch one container per rank:
+    RUN MULTI-NODE -- gmx_mpi (or gmx; same binary); two launch options:
+      (a) srun + PMIx  (Slurm-native; NO host OpenMPI module needed):
+        srun --mpi=pmix apptainer exec gromacs-cp2k.sif \
+            gmx_mpi mdrun -deffnm qmmm -ntomp $SLURM_CPUS_PER_TASK
+      (b) host mpirun  (load a matching host OpenMPI first):
+        module load OpenMPI/5.0.10-GCC-15.2.0     # same 5.0.x series as the image
+        mpirun -np $SLURM_NTASKS apptainer exec gromacs-cp2k.sif \
+            gmx_mpi mdrun -deffnm qmmm -ntomp $SLURM_CPUS_PER_TASK
+      Ranks wire up over PMIx and talk rank-to-rank over InfiniBand via UCX.
 
-        #!/bin/bash
-        #SBATCH -N 2 --ntasks-per-node=... --time=...
-        module load OpenMPI/5.0.10-GCC-15.2.0      # host launcher == container OMPI series
-        mpirun -np $SLURM_NTASKS \
-            apptainer exec gromacs-cp2k.sif \
-            gmx_mpi_d mdrun -deffnm qmmm -ntomp $SLURM_CPUS_PER_TASK
+    RUN SINGLE NODE -- gmx or gmx_mpi (same binary), one node:
+      srun --mpi=pmix -N1 apptainer exec gromacs-cp2k.sif \
+          gmx mdrun -deffnm qmmm -ntomp $SLURM_CPUS_PER_TASK
+      # or a single MPI rank with OpenMP threads (no launcher needed):
+      apptainer exec gromacs-cp2k.sif gmx mdrun -deffnm qmmm -ntomp $SLURM_CPUS_PER_TASK
 
-      The host PRRTE starts the ranks; each container's OpenMPI 5.0.x connects
-      back over PMIx and then talks rank-to-rank over InfiniBand via UCX.
+    SETUP / ANALYSIS TOOLS (grompp understands the CP2K QM/MM .mdp options):
+      apptainer exec gromacs-cp2k.sif gmx grompp -f qmmm.mdp -c conf.gro -p topol.top -o qmmm.tpr
 
-    RUN SINGLE NODE
-      apptainer exec gromacs-cp2k.sif mpirun -np 4 gmx_mpi_d mdrun -deffnm qmmm
+    Standalone CP2K:
       apptainer exec gromacs-cp2k.sif cp2k.psmp -i in.inp -o out.out
 
     CLUSTER-SIDE REQUIREMENTS (for the multi-node case)
-      - Host mpirun MUST be OpenMPI 5.0.x (same series as OPENMPI_VERSION).
+      - srun: use `srun --mpi=pmix` (the image's OpenMPI 5.0.10 provides PMIx).
+        The host Slurm's PMIx must be compatible -- it is if the host also ships
+        OpenMPI 5.0.x. Check that `srun --mpi=list` lists pmix.
+      - mpirun: the host mpirun MUST be OpenMPI 5.0.x (same series as the image).
       - Do NOT pass --cleanenv: PMIx/PRRTE wire-up relies on inherited PMIX_*/
         OMPI_* env vars being visible inside the container.
       - The PMIx session dir must be visible in the container. It normally lives
@@ -307,5 +332,4 @@ From: ubuntu:22.04
         container OpenMPI with --with-pmix=<that version, built from source>
         and --with-prrte=external to match.
       - GPU note: this is CPU-only (the right setup for double-precision QM/MM).
-
 
