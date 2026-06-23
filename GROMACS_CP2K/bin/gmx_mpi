@@ -1,0 +1,6 @@
+#!/bin/bash
+# Transparent wrapper -> run the same-named binary inside the GROMACS_CP2K image.
+: "${GROMACS_CP2K_SIF:?Load the module first:  module load GROMACS_CP2K}"
+bind=()
+[ -n "${TMPDIR:-}" ] && bind+=(--bind "$TMPDIR")   # expose a node-local TMPDIR if used
+exec apptainer exec "${bind[@]}" "$GROMACS_CP2K_SIF" "$(basename "$0")" "$@"
