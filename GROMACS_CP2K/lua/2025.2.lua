@@ -7,7 +7,7 @@
 -- ============================================================================
 
 -- Image path (.sif file or Apptainer sandbox directory)
-local sif = "/opt/nesi/containers/CP2K_GROMACS/GROMACS_2025.2_CP2K_2025.2.sif"
+local sif = "/opt/nesi/containers/GROMACS_CP2K/GROMACS_2025.2_CP2K_2025.2.sif"
 
 -- Host OpenMPI matching the image's OpenMPI; loaded automatically (depends_on).
 local host_ompi = "OpenMPI/5.0.10-GCC-15.2.0"
